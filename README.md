@@ -1,5 +1,7 @@
 # Byakugan
 
+Version 2.3 clarifies Agent and vulnerability-scanning workflows. Revoked agents and deleted schedules are archived out of operational views while their historical monitoring and audit evidence remains preserved; custom profiles can be removed, while protected built-in profiles remain available.
+
 Version 2.2 adds daily and on-demand CVE risk intelligence from the CISA Known Exploited Vulnerabilities catalog and FIRST EPSS. Known exploitation, probability, source provenance, and synchronization evidence are included in vulnerability workflows and audit exports.
 
 ## Docker image
@@ -7,7 +9,7 @@ Version 2.2 adds daily and on-demand CVE risk intelligence from the CISA Known E
 Prebuilt multi-platform images are published to GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/pk115/byakugan:2.2.0
+docker pull ghcr.io/pk115/byakugan:2.3.0
 docker pull ghcr.io/pk115/byakugan:latest
 ```
 

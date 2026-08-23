@@ -1,6 +1,6 @@
 {
   "name": "byakugan",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
   "description": "Self-hosted infrastructure monitoring, vulnerability management, and ISO 27001 audit evidence",
   "type": "module",
