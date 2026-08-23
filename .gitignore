@@ -1,0 +1,12 @@
+node_modules/
+.npm-cache/
+outputs/
+work/
+backups/
+dist-web/
+dist-server/
+data/*
+!data/.gitkeep
+.env
+*.log
+.DS_Store

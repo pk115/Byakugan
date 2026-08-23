@@ -1,0 +1,10 @@
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+
+const alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+export function createMfaSecret(){const bytes=randomBytes(20);let bits="";for(const byte of bytes)bits+=byte.toString(2).padStart(8,"0");let result="";for(let index=0;index<bits.length;index+=5)result+=alphabet[Number.parseInt(bits.slice(index,index+5).padEnd(5,"0"),2)];return result}
+function decodeBase32(value:string){const clean=value.toUpperCase().replace(/[^A-Z2-7]/g,"");let bits="";for(const char of clean){const index=alphabet.indexOf(char);if(index<0)throw new Error("Invalid MFA secret");bits+=index.toString(2).padStart(5,"0")}const bytes=[];for(let index=0;index+8<=bits.length;index+=8)bytes.push(Number.parseInt(bits.slice(index,index+8),2));return Buffer.from(bytes)}
+function codeAt(secret:string,counter:number){const buffer=Buffer.alloc(8);buffer.writeBigUInt64BE(BigInt(counter));const digest=createHmac("sha1",decodeBase32(secret)).update(buffer).digest();const offset=digest[digest.length-1]&15;const number=(digest.readUInt32BE(offset)&0x7fffffff)%1_000_000;return number.toString().padStart(6,"0")}
+export function verifyMfaCode(secret:string,code:string,now=Date.now()){if(!/^\d{6}$/.test(code))return false;const counter=Math.floor(now/30000);for(const drift of[-1,0,1]){const expected=Buffer.from(codeAt(secret,counter+drift));const supplied=Buffer.from(code);if(expected.length===supplied.length&&timingSafeEqual(expected,supplied))return true}return false}
+export function mfaUri(secret:string,username:string,issuer="Byakugan"){return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(username)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`}
+export function createRecoveryCodes(count=10){return Array.from({length:count},()=>{const raw=randomBytes(8).toString("hex").toUpperCase().slice(0,12);return `${raw.slice(0,4)}-${raw.slice(4,8)}-${raw.slice(8)}`})}
+export function recoveryCodeHash(code:string){return createHash("sha256").update(code.trim().toUpperCase()).digest("hex")}

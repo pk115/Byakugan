@@ -1,0 +1,11 @@
+node_modules
+dist-web
+dist-server
+data
+outputs
+work
+backups
+.npm-cache
+.git
+.env
+*.log

@@ -1,0 +1,19 @@
+services:
+  supapulse-agent:
+    build: .
+    restart: unless-stopped
+    environment:
+      SUPAPULSE_URL: https://monitor.example.com
+      SUPAPULSE_AGENT_TOKEN: ${SUPAPULSE_AGENT_TOKEN:?Create an agent in Byakugan}
+      SUPAPULSE_AGENT_INTERVAL: 300
+      SUPAPULSE_TRIVY_TARGET: /host
+      TRIVY_CACHE_DIR: /tmp/trivy-cache
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+      - trivy-cache:/tmp/trivy-cache
+    group_add:
+      - "${DOCKER_GID:-0}"
+
+volumes:
+  trivy-cache:

@@ -1,0 +1,26 @@
+services:
+  supapulse:
+    build: .
+    image: byakugan:local
+    container_name: byakugan
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3010:3000"
+    environment:
+      SUPAPULSE_HOST: 0.0.0.0
+      SUPAPULSE_PORT: 3000
+      SUPAPULSE_DATA_DIR: /app/data
+      SUPAPULSE_MASTER_KEY: ${SUPAPULSE_MASTER_KEY:?Set SUPAPULSE_MASTER_KEY in .env}
+      SUPAPULSE_SESSION_SECRET: ${SUPAPULSE_SESSION_SECRET:?Set SUPAPULSE_SESSION_SECRET in .env}
+      SUPAPULSE_SECURE_COOKIES: ${SUPAPULSE_SECURE_COOKIES:-false}
+      SUPAPULSE_PUBLIC_ORIGIN: ${SUPAPULSE_PUBLIC_ORIGIN:-}
+      SUPAPULSE_DOCKER_SOCKET: /var/run/docker.sock
+    volumes:
+      - supapulse-data:/app/data
+      # Docker Monitor requires this read-only socket. Remove it if unused.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    group_add:
+      - "${DOCKER_GID:-0}"
+
+volumes:
+  supapulse-data:

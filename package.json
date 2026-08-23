@@ -1,0 +1,63 @@
+{
+  "name": "byakugan",
+  "version": "2.2.0",
+  "private": true,
+  "description": "Self-hosted infrastructure monitoring, vulnerability management, and ISO 27001 audit evidence",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch server/server.ts",
+    "dev:web": "vite",
+    "build": "npm run build:web && npm run build:server",
+    "build:web": "vite build --configLoader runner",
+    "build:server": "tsc -p tsconfig.server.json",
+    "start": "node dist-server/server.js",
+    "typecheck": "vue-tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "test": "vitest run --configLoader runner"
+    ,"test:security": "node scripts/security-test.mjs"
+    ,"backup": "node scripts/backup.mjs"
+    ,"restore": "node scripts/restore.mjs"
+    ,"migrate:postgres": "node scripts/migrate-postgres.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1116.0",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/websocket": "^11.2.0",
+    "archiver": "^8.0.0",
+    "argon2": "^0.44.0",
+    "better-sqlite3": "^12.2.0",
+    "fastify": "^5.5.0",
+    "mongodb": "^7.5.0",
+    "mssql": "^12.7.0",
+    "mysql2": "^3.23.4",
+    "nodemailer": "^9.0.5",
+    "openid-client": "^6.8.7",
+    "pdfkit": "^0.19.1",
+    "pg": "^8.23.0",
+    "qrcode": "^1.5.4",
+    "vue": "^3.5.18",
+    "vue-router": "^4.5.1",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/archiver": "^8.0.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/mssql": "^12.3.0",
+    "@types/nodemailer": "^8.0.1",
+    "@types/pdfkit": "^0.17.6",
+    "@types/pg": "^8.23.1",
+    "@types/qrcode": "^1.5.6",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3",
+    "vitest": "^3.2.4",
+    "vue-tsc": "^3.0.6"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
