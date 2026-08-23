@@ -1,7 +1,7 @@
 services:
   supapulse:
     build: .
-    image: byakugan:2.2.0
+    image: ghcr.io/pk115/byakugan:2.2.0
     restart: unless-stopped
     init: true
     read_only: true

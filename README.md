@@ -2,6 +2,17 @@
 
 Version 2.2 adds daily and on-demand CVE risk intelligence from the CISA Known Exploited Vulnerabilities catalog and FIRST EPSS. Known exploitation, probability, source provenance, and synchronization evidence are included in vulnerability workflows and audit exports.
 
+## Docker image
+
+Prebuilt multi-platform images are published to GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/pk115/byakugan:2.2.0
+docker pull ghcr.io/pk115/byakugan:latest
+```
+
+The images support `linux/amd64` and `linux/arm64`. Copy `.env.example` to `.env`, set every required secret, then use `compose.production.yaml` for a hardened deployment.
+
 ## Security scan jobs
 
 Version 2.1 introduces an original cyber-operations guardian illustration on the responsive login experience while keeping the pearl-white Byakugan eye as the primary product mark. The character, clothing, telemetry, and hand pose are original and do not reproduce franchise characters or symbols. Existing `SUPAPULSE_*` environment variables, the `supapulse.db` database filename, and the `supapulse-data` Docker volume remain unchanged for backward compatibility and safe upgrades.
