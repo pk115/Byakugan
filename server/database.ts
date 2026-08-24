@@ -535,6 +535,7 @@ db.exec(`
 ensureColumn("vulnerability_scan_jobs", "profile_id", "INTEGER REFERENCES vulnerability_scan_profiles(id) ON DELETE SET NULL");
 ensureColumn("vulnerability_scan_jobs", "schedule_id", "INTEGER REFERENCES vulnerability_scan_schedules(id) ON DELETE SET NULL");
 ensureColumn("vulnerability_scan_jobs", "timeout_seconds", "INTEGER NOT NULL DEFAULT 900");
+ensureColumn("vulnerability_scan_jobs", "archived_at", "TEXT");
 const insertScanProfile=db.prepare("INSERT OR IGNORE INTO vulnerability_scan_profiles(name,description,target_type,scanners,severity,timeout_seconds,system_profile) VALUES(?,?,?,?,?,?,1)");
 insertScanProfile.run("Quick vulnerabilities","Fast OS and application package vulnerability scan","FILESYSTEM","vuln","HIGH,CRITICAL",600);
 insertScanProfile.run("Full server security","Vulnerabilities, configuration weaknesses, and exposed secrets","ROOTFS","vuln,misconfig,secret","UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL",900);
