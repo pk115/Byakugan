@@ -49,7 +49,7 @@ function Get-AgentPayload {
     $installed = @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object DisplayName).Count
     $boot = if ($os.LastBootUpTime -is [DateTime]) { $os.LastBootUpTime } else { [Management.ManagementDateTimeConverter]::ToDateTime([string]$os.LastBootUpTime) }
     @{
-        agentVersion = "0.4.1-windows"; observedAt = (Get-Date).ToUniversalTime().ToString("o"); hostname = $env:COMPUTERNAME
+        agentVersion = "0.4.2-windows"; observedAt = (Get-Date).ToUniversalTime().ToString("o"); hostname = $env:COMPUTERNAME
         inventory = @{
             osName = [string]$os.Caption; osVersion = [string]$os.Version; kernel = [string]$os.BuildNumber
             architecture = [string]$os.OSArchitecture; cpuModel = [string]$processors[0].Name
@@ -70,10 +70,11 @@ function Get-AgentPayload {
 function Convert-TrivyReport {
     param($Report)
     $findings = New-Object System.Collections.Generic.List[object]
+    function Normalize-Severity([object]$Value) { $candidate = ([string]$Value).ToUpperInvariant(); if (@("UNKNOWN","LOW","MEDIUM","HIGH","CRITICAL") -contains $candidate) { $candidate } else { "UNKNOWN" } }
     foreach ($result in @($Report.Results)) {
-        foreach ($item in @($result.Vulnerabilities)) { if ($findings.Count -lt 5000) { $findings.Add(@{ id=[string]$item.VulnerabilityID; type="VULNERABILITY"; packageName=[string]$item.PkgName; installedVersion=[string]$item.InstalledVersion; fixedVersion=[string]$item.FixedVersion; severity=([string]$item.Severity).ToUpper(); title=[string]$item.Title; resourcePath=[string]$result.Target }) } }
-        foreach ($item in @($result.Misconfigurations)) { if ($findings.Count -lt 5000) { $package = if ($item.Type) { $item.Type } else { $item.AVDID }; $findings.Add(@{ id=[string]$item.ID; type="MISCONFIGURATION"; packageName=[string]$package; installedVersion=""; severity=([string]$item.Severity).ToUpper(); title=[string]$item.Title; resourcePath=[string]$result.Target }) } }
-        foreach ($item in @($result.Secrets)) { if ($findings.Count -lt 5000) { $findings.Add(@{ id=[string]$item.RuleID; type="SECRET"; packageName=[string]$item.Category; installedVersion=""; severity="HIGH"; title=[string]$item.Title; resourcePath=[string]$result.Target }) } }
+        foreach ($item in @($result.Vulnerabilities)) { if ($null -ne $item -and $findings.Count -lt 5000) { $id=if($item.VulnerabilityID){[string]$item.VulnerabilityID}else{"UNKNOWN"};$package=if($item.PkgName){[string]$item.PkgName}else{"unknown"};$findings.Add(@{ id=$id; type="VULNERABILITY"; packageName=$package; installedVersion=[string]$item.InstalledVersion; fixedVersion=[string]$item.FixedVersion; severity=(Normalize-Severity $item.Severity); title=[string]$item.Title; resourcePath=[string]$result.Target }) } }
+        foreach ($item in @($result.Misconfigurations)) { if ($null -ne $item -and $findings.Count -lt 5000) { $id=if($item.ID){[string]$item.ID}else{"MISCONFIG"};$package=if($item.Type){[string]$item.Type}elseif($item.AVDID){[string]$item.AVDID}else{"configuration"};$findings.Add(@{ id=$id; type="MISCONFIGURATION"; packageName=$package; installedVersion=""; severity=(Normalize-Severity $item.Severity); title=[string]$item.Title; resourcePath=[string]$result.Target }) } }
+        foreach ($item in @($result.Secrets)) { if ($null -ne $item -and $findings.Count -lt 5000) { $id=if($item.RuleID){[string]$item.RuleID}else{"SECRET"};$package=if($item.Category){[string]$item.Category}else{"secret"};$secretSeverity=if($item.Severity){$item.Severity}else{"HIGH"};$findings.Add(@{ id=$id; type="SECRET"; packageName=$package; installedVersion=""; severity=(Normalize-Severity $secretSeverity); title=[string]$item.Title; resourcePath=[string]$result.Target }) } }
     }
     $findings | ForEach-Object { $_ }
 }
@@ -93,8 +94,13 @@ function Invoke-ScanJob {
         $target = [string]$job.target
         if (($subcommand -eq "fs" -or $subcommand -eq "rootfs") -and $target -eq "/") { $target = "$env:SystemDrive\" }
         $arguments = @($subcommand,"--quiet","--scanners",(@($job.scanners) -join ','),"--severity",(@($job.severity) -join ','),"--format","json","--output",$temp,$target)
-        $trivyOutput = (& $trivy @arguments 2>&1 | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0) { throw "Trivy returned exit code $LASTEXITCODE$(if($trivyOutput){': '+$trivyOutput.Substring(0,[Math]::Min(700,$trivyOutput.Length))})" }
+        $stdout = Join-Path $env:TEMP "byakugan-trivy-$($job.id).stdout.log"; $stderr = Join-Path $env:TEMP "byakugan-trivy-$($job.id).stderr.log"
+        $argumentLine = ($arguments | ForEach-Object { '"' + ([string]$_).Replace('"','\"') + '"' }) -join ' '
+        $process = Start-Process -FilePath ([string]$trivy) -ArgumentList $argumentLine -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
+        while (!$process.WaitForExit(15000)) { try { Invoke-ByakuganApi "/api/agent/scan-jobs/$($job.id)/progress" "POST" @{ progress = 50 } | Out-Null } catch {} }
+        $trivyOutput = ((Get-Content -LiteralPath $stderr,$stdout -Raw -ErrorAction SilentlyContinue) -join "`n").Trim()
+        Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
+        if ($process.ExitCode -ne 0) { throw "Trivy returned exit code $($process.ExitCode)$(if($trivyOutput){': '+$trivyOutput.Substring(0,[Math]::Min(700,$trivyOutput.Length))})" }
         $report = Get-Content -LiteralPath $temp -Raw | ConvertFrom-Json; Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
         $findings = @(Convert-TrivyReport $report)
         $version = (& $trivy --version | Select-Object -First 1)
