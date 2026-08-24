@@ -37,7 +37,7 @@ New-Item -ItemType Directory -Path $bin -Force | Out-Null
 Expand-Archive -LiteralPath $trivyArchive -DestinationPath $bin -Force
 Remove-Item -LiteralPath $trivyArchive,$trivyChecksums -Force -ErrorAction SilentlyContinue
 @{ url=$Url.TrimEnd('/'); token=$Token; intervalSeconds=$IntervalSeconds; scanPollSeconds=15 } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
-& icacls.exe $target /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" | Out-Null
+& icacls.exe $target /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
 $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$target\byakugan-agent.ps1`""
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest

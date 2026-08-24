@@ -49,7 +49,7 @@ function Get-AgentPayload {
     $installed = @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object DisplayName).Count
     $boot = if ($os.LastBootUpTime -is [DateTime]) { $os.LastBootUpTime } else { [Management.ManagementDateTimeConverter]::ToDateTime([string]$os.LastBootUpTime) }
     @{
-        agentVersion = "0.4.0-windows"; observedAt = (Get-Date).ToUniversalTime().ToString("o"); hostname = $env:COMPUTERNAME
+        agentVersion = "0.4.1-windows"; observedAt = (Get-Date).ToUniversalTime().ToString("o"); hostname = $env:COMPUTERNAME
         inventory = @{
             osName = [string]$os.Caption; osVersion = [string]$os.Version; kernel = [string]$os.BuildNumber
             architecture = [string]$os.OSArchitecture; cpuModel = [string]$processors[0].Name
@@ -75,7 +75,7 @@ function Convert-TrivyReport {
         foreach ($item in @($result.Misconfigurations)) { if ($findings.Count -lt 5000) { $package = if ($item.Type) { $item.Type } else { $item.AVDID }; $findings.Add(@{ id=[string]$item.ID; type="MISCONFIGURATION"; packageName=[string]$package; installedVersion=""; severity=([string]$item.Severity).ToUpper(); title=[string]$item.Title; resourcePath=[string]$result.Target }) } }
         foreach ($item in @($result.Secrets)) { if ($findings.Count -lt 5000) { $findings.Add(@{ id=[string]$item.RuleID; type="SECRET"; packageName=[string]$item.Category; installedVersion=""; severity="HIGH"; title=[string]$item.Title; resourcePath=[string]$result.Target }) } }
     }
-    @($findings)
+    $findings | ForEach-Object { $_ }
 }
 
 function Invoke-ScanJob {
@@ -90,9 +90,11 @@ function Invoke-ScanJob {
         Invoke-ByakuganApi "/api/agent/scan-jobs/$($job.id)/progress" "POST" @{ progress = 15 } | Out-Null
         $subcommand = switch ($job.targetType) { "FILESYSTEM" { "fs" }; "ROOTFS" { "rootfs" }; "IMAGE" { "image" }; default { throw "UNSUPPORTED_TARGET" } }
         $temp = Join-Path $env:TEMP "byakugan-trivy-$($job.id).json"
-        $arguments = @($subcommand,"--quiet","--scanners",(@($job.scanners) -join ','),"--severity",(@($job.severity) -join ','),"--format","json","--output",$temp,[string]$job.target)
-        & $trivy @arguments
-        if ($LASTEXITCODE -ne 0) { throw "Trivy returned exit code $LASTEXITCODE" }
+        $target = [string]$job.target
+        if (($subcommand -eq "fs" -or $subcommand -eq "rootfs") -and $target -eq "/") { $target = "$env:SystemDrive\" }
+        $arguments = @($subcommand,"--quiet","--scanners",(@($job.scanners) -join ','),"--severity",(@($job.severity) -join ','),"--format","json","--output",$temp,$target)
+        $trivyOutput = (& $trivy @arguments 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "Trivy returned exit code $LASTEXITCODE$(if($trivyOutput){': '+$trivyOutput.Substring(0,[Math]::Min(700,$trivyOutput.Length))})" }
         $report = Get-Content -LiteralPath $temp -Raw | ConvertFrom-Json; Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
         $findings = @(Convert-TrivyReport $report)
         $version = (& $trivy --version | Select-Object -First 1)
