@@ -29,6 +29,14 @@ Get-ScheduledTask -TaskName "Byakugan Agent"
 Get-ScheduledTaskInfo -TaskName "Byakugan Agent"
 ```
 
+Upgrade or repair an existing installation without entering its token again:
+
+```powershell
+$installer = Join-Path $env:TEMP "byakugan-install.ps1"
+Invoke-WebRequest "https://raw.githubusercontent.com/pk115/Byakugan/main/agent-windows/install.ps1" -OutFile $installer
+& $installer
+```
+
 ## Vulnerability scans
 
 The installer downloads a pinned Trivy release, verifies its SHA-256 checksum, and keeps it in the protected Byakugan directory. Create or queue a filesystem/image scan from the Vulnerability Management page. Only normalized finding metadata is uploaded; file contents and secret values are not sent.

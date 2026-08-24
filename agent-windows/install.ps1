@@ -1,12 +1,19 @@
 #requires -RunAsAdministrator
 param(
-    [Parameter(Mandatory=$true)][ValidatePattern('^https?://')][string]$Url,
-    [Parameter(Mandatory=$true)][ValidateLength(32,256)][string]$Token,
+    [string]$Url,
+    [string]$Token,
     [ValidateRange(60,86400)][int]$IntervalSeconds = 300
 )
 $ErrorActionPreference = "Stop"
 $target = Join-Path $env:ProgramData "Byakugan"
 New-Item -ItemType Directory -Path $target -Force | Out-Null
+$configFile = Join-Path $target "agent.json"
+if ((!$Url -or !$Token) -and (Test-Path -LiteralPath $configFile)) {
+    $existing = Get-Content -LiteralPath $configFile -Raw | ConvertFrom-Json
+    if (!$Url) { $Url = [string]$existing.url }
+    if (!$Token) { $Token = [string]$existing.token }
+}
+if ($Url -notmatch '^https?://' -or $Token.Length -lt 32 -or $Token.Length -gt 256) { throw "Url and Token are required for first installation. Existing installations can be repaired without them." }
 $agentSource = Join-Path $PSScriptRoot "byakugan-agent.ps1"
 if (Test-Path -LiteralPath $agentSource) {
     Copy-Item -LiteralPath $agentSource -Destination $target -Force
@@ -29,7 +36,7 @@ $bin = Join-Path $target "bin"
 New-Item -ItemType Directory -Path $bin -Force | Out-Null
 Expand-Archive -LiteralPath $trivyArchive -DestinationPath $bin -Force
 Remove-Item -LiteralPath $trivyArchive,$trivyChecksums -Force -ErrorAction SilentlyContinue
-@{ url=$Url.TrimEnd('/'); token=$Token; intervalSeconds=$IntervalSeconds; scanPollSeconds=15 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $target "agent.json") -Encoding UTF8
+@{ url=$Url.TrimEnd('/'); token=$Token; intervalSeconds=$IntervalSeconds; scanPollSeconds=15 } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
 & icacls.exe $target /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" | Out-Null
 $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$target\byakugan-agent.ps1`""
 $trigger = New-ScheduledTaskTrigger -AtStartup
