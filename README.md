@@ -208,6 +208,8 @@ Version `1.5.3` completes the extensible Thai/English setup experience for proje
 
 ## Linux server agent
 
+The easiest installation is one command copied from **Servers & Agents → Add**. It downloads the installer, pulls `ghcr.io/pk115/byakugan-agent:latest`, creates a protected configuration under `/opt/byakugan-agent`, and starts the agent automatically.
+
 Build the agent image from the repository root:
 
 ```bash
@@ -217,6 +219,20 @@ docker build -t supapulse-agent:local agent
 Create an enrollment token in **Server Agents**, copy `agent/compose.example.yaml` to the target Linux server, set `SUPAPULSE_URL`, `SUPAPULSE_AGENT_TOKEN`, and the host Docker group ID, then start it with `docker compose up -d`. The token is displayed only once and Byakugan stores only its SHA-256 hash.
 
 For vulnerability evidence, install Trivy where the agent runs and set `SUPAPULSE_TRIVY_TARGET` to the filesystem to scan (for example `/` for a direct host installation). The agent transmits normalized CVE metadata only and caps each report at 2,000 findings.
+
+## Windows server agent
+
+The native PowerShell agent supports Windows Server 2016+ and Windows 10/11 without a Linux container. The UI supplies a single PowerShell command that downloads and installs it as a background startup task. It collects host CPU, memory, disks, uptime, Windows Update/reboot state, installed-software count, and Docker status over outbound HTTPS. It also executes explicitly queued Trivy filesystem and image scans.
+
+Create an enrollment token in **Servers & Agents**, download or clone this repository, then run an elevated PowerShell window:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+cd .\agent-windows
+.\install.ps1 -Url "https://monitor.example.com" -Token "PASTE_ONE_TIME_TOKEN"
+```
+
+See [`agent-windows/README.md`](agent-windows/README.md) for verification, vulnerability scanning, and removal instructions.
 
 ## License
 
