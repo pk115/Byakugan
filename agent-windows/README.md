@@ -8,7 +8,7 @@ The native Windows agent collects host CPU, memory, fixed disks, uptime, Windows
 - Windows PowerShell 5.1+
 - Administrator access for installation
 - Outbound access to the Byakugan URL
-- Optional: `trivy.exe` in the system PATH for vulnerability scans
+- Internet access during installation so the installer can download and checksum-verify the pinned Trivy scanner
 
 ## Install
 
@@ -31,7 +31,7 @@ Get-ScheduledTaskInfo -TaskName "Byakugan Agent"
 
 ## Vulnerability scans
 
-Install Trivy on the Windows host and make `trivy.exe` available in the system PATH. Then create or queue a filesystem/image scan from the Vulnerability Management page. Only normalized finding metadata is uploaded; file contents and secret values are not sent.
+The installer downloads a pinned Trivy release, verifies its SHA-256 checksum, and keeps it in the protected Byakugan directory. Create or queue a filesystem/image scan from the Vulnerability Management page. Only normalized finding metadata is uploaded; file contents and secret values are not sent.
 
 ## Uninstall
 

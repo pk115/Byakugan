@@ -84,16 +84,18 @@ function Invoke-ScanJob {
     if (!$job -or !$job.id) { return }
     $started = Get-Date
     try {
-        if (!(Get-Command trivy -ErrorAction SilentlyContinue)) { throw "TRIVY_NOT_INSTALLED: Install Trivy and ensure trivy.exe is in the system PATH" }
+        $trivy = Get-Command trivy -ErrorAction SilentlyContinue
+        if (!$trivy) { $localTrivy = Join-Path $PSScriptRoot "bin\trivy.exe"; if (Test-Path -LiteralPath $localTrivy) { $trivy = $localTrivy } }
+        if (!$trivy) { throw "TRIVY_NOT_INSTALLED: Re-run the latest Byakugan Windows installer" }
         Invoke-ByakuganApi "/api/agent/scan-jobs/$($job.id)/progress" "POST" @{ progress = 15 } | Out-Null
         $subcommand = switch ($job.targetType) { "FILESYSTEM" { "fs" }; "ROOTFS" { "rootfs" }; "IMAGE" { "image" }; default { throw "UNSUPPORTED_TARGET" } }
         $temp = Join-Path $env:TEMP "byakugan-trivy-$($job.id).json"
         $arguments = @($subcommand,"--quiet","--scanners",(@($job.scanners) -join ','),"--severity",(@($job.severity) -join ','),"--format","json","--output",$temp,[string]$job.target)
-        & trivy @arguments
+        & $trivy @arguments
         if ($LASTEXITCODE -ne 0) { throw "Trivy returned exit code $LASTEXITCODE" }
         $report = Get-Content -LiteralPath $temp -Raw | ConvertFrom-Json; Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
         $findings = @(Convert-TrivyReport $report)
-        $version = (& trivy --version | Select-Object -First 1)
+        $version = (& $trivy --version | Select-Object -First 1)
         Invoke-ByakuganApi "/api/agent/scan-jobs/$($job.id)/result" "POST" @{ scanner="Trivy"; scannerVersion=[string]$version; observedAt=(Get-Date).ToUniversalTime().ToString("o"); findings=$findings; summary=@{ durationMs=[int]((Get-Date)-$started).TotalMilliseconds; truncated=($findings.Count -ge 5000) } } | Out-Null
     } catch {
         $message = [string]$_; $code = if ($message -like "TRIVY_NOT_INSTALLED*") { "TRIVY_NOT_INSTALLED" } else { "SCAN_FAILED" }
