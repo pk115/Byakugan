@@ -27,7 +27,7 @@ import { evaluateLogAlerts, ingestLogs, logBatchSchema, logSummary, queryLogs } 
 import { healthHistory, healthRows, healthStatus, setExpectedLogSources, updatePolicy } from "./health.js";
 import { systemRegional } from "./localization.js";
 
-const app = Fastify({ logger: { level: config.isProduction ? "info" : "warn" }, bodyLimit: 64 * 1024 });
+const app = Fastify({ logger: { level: config.isProduction ? "info" : "warn" }, bodyLimit: 64 * 1024, trustProxy: (_address: string, hop: number) => hop < config.trustProxyHops }); // trust the first N hops; 0 trusts none
 await app.register(cookie);
 await app.register(rateLimit, { global: false });
 

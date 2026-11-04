@@ -18,6 +18,8 @@ export const config = {
   sessionSecret: requiredSecret("SUPAPULSE_SESSION_SECRET"),
   isProduction: process.env.NODE_ENV === "production",
   secureCookies: process.env.SUPAPULSE_SECURE_COOKIES === "true",
-  publicOrigin: process.env.SUPAPULSE_PUBLIC_ORIGIN?.replace(/\/$/,"")
+  publicOrigin: process.env.SUPAPULSE_PUBLIC_ORIGIN?.replace(/\/$/,""),
+  // Number of reverse proxies in front of the app (Cloudflare Tunnel = 1). 0 = use the socket address. Only set it when the port is not reachable except through the proxy.
+  trustProxyHops: Math.max(0, Math.trunc(Number(process.env.SUPAPULSE_TRUST_PROXY_HOPS ?? 0)) || 0)
   ,maintenanceMode: process.env.SUPAPULSE_MAINTENANCE_MODE === "true"
 };
