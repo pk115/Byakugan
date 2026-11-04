@@ -14,11 +14,11 @@
     "build:server": "tsc -p tsconfig.server.json",
     "start": "node dist-server/server.js",
     "typecheck": "vue-tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
-    "test": "vitest run --configLoader runner"
-    ,"test:security": "node scripts/security-test.mjs"
-    ,"backup": "node scripts/backup.mjs"
-    ,"restore": "node scripts/restore.mjs"
-    ,"migrate:postgres": "node scripts/migrate-postgres.mjs"
+    "test": "vitest run --configLoader runner",
+    "test:security": "node scripts/security-test.mjs",
+    "backup": "node scripts/backup.mjs",
+    "restore": "node scripts/restore.mjs",
+    "migrate:postgres": "node scripts/migrate-postgres.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1116.0",
@@ -32,7 +32,7 @@
     "mongodb": "^7.5.0",
     "mssql": "^12.7.0",
     "mysql2": "^3.23.4",
-    "nodemailer": "^9.0.5",
+    "nodemailer": "^10.3.1",
     "openid-client": "^6.8.7",
     "pdfkit": "^0.19.1",
     "pg": "^8.23.0",
