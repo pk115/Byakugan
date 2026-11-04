@@ -73,6 +73,19 @@ export async function testNotification(type: NotificationType, config: Notificat
   const {locale,timezone}=systemRegional(),time=new Intl.DateTimeFormat(locale,{dateStyle:"medium",timeStyle:"long",timeZone:timezone}).format(new Date());await deliver(row, config, `🟢 ${systemText("Byakugan test notification","ทดสอบการแจ้งเตือน Byakugan")}\n${systemText("Time","เวลา")}: ${time} (${timezone})\nUTC: ${new Date().toISOString()}`);
 }
 
+// WARNING goes to Help desk channels (all enabled channels if none is flagged); CRITICAL and RECOVERY go to every enabled channel.
+export async function dispatchHealthNotification(event: "HEALTH_WARNING" | "HEALTH_CRITICAL" | "HEALTH_RECOVERY", text: string) {
+  const enabled = db.prepare("SELECT * FROM notifications WHERE enabled=1").all() as Array<NotificationRow & { help_desk: number }>;
+  const helpDesk = enabled.filter((row) => row.help_desk);
+  const rows = event === "HEALTH_WARNING" && helpDesk.length ? helpDesk : enabled;
+  await Promise.all(rows.map(async (row) => {
+    let success = 1, errorMessage: string | null = null;
+    try { await deliver(row, JSON.parse(decrypt(row.encrypted_config)) as NotificationConfig, text); }
+    catch (error) { success = 0; errorMessage = error instanceof Error ? error.message : "Notification failed"; }
+    db.prepare("INSERT INTO notification_deliveries(notification_id,project_id,event,success,error_message) VALUES(?,NULL,?,?,?)").run(row.id, event, success, errorMessage);
+  }));
+}
+
 export async function dispatchSecurityNotification(event:"VULNERABILITY_NEW"|"SCAN_FAILED",text:string){
   const rows=db.prepare("SELECT * FROM notifications WHERE enabled=1").all() as NotificationRow[];
   await Promise.all(rows.map(async row=>{let success=1,errorMessage:null|string=null;try{await deliver(row,JSON.parse(decrypt(row.encrypted_config)) as NotificationConfig,text)}catch(error){success=0;errorMessage=error instanceof Error?error.message:"Notification failed"}db.prepare("INSERT INTO notification_deliveries(notification_id,project_id,event,success,error_message) VALUES(?,NULL,?,?,?)").run(row.id,event,success,errorMessage)}));

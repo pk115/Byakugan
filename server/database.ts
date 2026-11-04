@@ -138,6 +138,25 @@ ensureColumn("incidents", "lessons_learned", "TEXT");
 ensureColumn("incidents", "review_status", "TEXT NOT NULL DEFAULT 'PENDING'");
 ensureColumn("incidents", "reviewed_by", "INTEGER");
 ensureColumn("incidents", "reviewed_at", "TEXT");
+ensureColumn("notifications", "help_desk", "INTEGER NOT NULL DEFAULT 0");
+// Health Check incidents have no monitor: rebuild once so project_id can be NULL (nothing references incidents).
+if ((db.pragma("table_info(incidents)") as Array<{ name: string; notnull: number }>).find((c) => c.name === "project_id")?.notnull) {
+  db.transaction(() => db.exec(`
+    CREATE TABLE incidents_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+      status TEXT NOT NULL, message TEXT, started_at TEXT NOT NULL, resolved_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      severity TEXT NOT NULL DEFAULT 'MEDIUM', owner TEXT, root_cause TEXT, corrective_action TEXT, lessons_learned TEXT,
+      review_status TEXT NOT NULL DEFAULT 'PENDING', reviewed_by INTEGER, reviewed_at TEXT,
+      health_policy_no INTEGER, source_label TEXT
+    );
+    INSERT INTO incidents_new(id,project_id,status,message,started_at,resolved_at,created_at,severity,owner,root_cause,corrective_action,lessons_learned,review_status,reviewed_by,reviewed_at)
+      SELECT id,project_id,status,message,started_at,resolved_at,created_at,severity,owner,root_cause,corrective_action,lessons_learned,review_status,reviewed_by,reviewed_at FROM incidents;
+    DROP TABLE incidents;
+    ALTER TABLE incidents_new RENAME TO incidents;
+  `))();
+}
 db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,

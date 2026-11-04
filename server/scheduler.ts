@@ -10,6 +10,7 @@ import {decrypt} from "./crypto.js";
 import {deliverReport,deliveryErrorCode,type DeliveryConfig} from "./report-delivery.js";
 import { scheduleThreatIntelligence } from "./threat-intelligence.js";
 import { purgeExpiredLogs } from "./log-events.js";
+import { runHealthChecks } from "./health.js";
 
 let timer: NodeJS.Timeout | undefined;
 let reportsRunning=false;
@@ -56,6 +57,7 @@ async function tick() {
   backupFreshness();
   scheduleThreatIntelligence();
   if (Date.now() - lastLogPurge > 3600_000) { lastLogPurge = Date.now(); purgeExpiredLogs(); }
+  await runHealthChecks();
 }
 
 export function startScheduler() {

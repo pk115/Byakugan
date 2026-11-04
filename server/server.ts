@@ -24,6 +24,7 @@ import { allowedEmail, authorizationUrl, chooseRole, consumeState, oidcConfigura
 import {deliveryErrorCode,testDeliveryChannel,type DeliveryConfig} from "./report-delivery.js";
 import { syncThreatIntelligence, threatIntelligenceStatus } from "./threat-intelligence.js";
 import { evaluateLogAlerts, ingestLogs, logBatchSchema, logSummary, queryLogs } from "./log-events.js";
+import { healthStatus, updatePolicy } from "./health.js";
 
 const app = Fastify({ logger: { level: config.isProduction ? "info" : "warn" }, bodyLimit: 64 * 1024 });
 await app.register(cookie);
@@ -231,9 +232,6 @@ app.post("/api/agent/ingest", { config:{rateLimit:{max:120,timeWindow:"1 minute"
     db.prepare(`INSERT INTO host_metrics(agent_id,cpu_percent,memory_percent,swap_percent,load_1,load_5,load_15,uptime_seconds,disks_json,containers_json,observed_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(agent.id,body.metrics.cpuPercent,body.metrics.memoryPercent,body.metrics.swapPercent??null,body.metrics.load1??null,body.metrics.load5??null,body.metrics.load15??null,body.metrics.uptimeSeconds,JSON.stringify(body.metrics.disks),JSON.stringify(body.metrics.containers),body.observedAt);
     const findings=[
-      {key:"cpu",active:body.metrics.cpuPercent>=90,severity:"CRITICAL",category:"HEALTH",title:"CPU usage is critical",explanation:`CPU is ${body.metrics.cpuPercent}% (threshold 90%)`},
-      {key:"memory",active:body.metrics.memoryPercent>=90,severity:"CRITICAL",category:"HEALTH",title:"Memory usage is critical",explanation:`Memory is ${body.metrics.memoryPercent}% (threshold 90%)`},
-      {key:"disk",active:body.metrics.disks.some(d=>d.usedPercent>=85),severity:"HIGH",category:"HEALTH",title:"Disk usage exceeds policy",explanation:`One or more disks exceed 85% usage`},
       {key:"security_updates",active:body.inventory.securityUpdateCount>0,severity:"HIGH",category:"PATCH",title:"Security updates are pending",explanation:`${body.inventory.securityUpdateCount} security update(s) pending`},
       {key:"reboot",active:body.inventory.rebootRequired,severity:"MEDIUM",category:"PATCH",title:"Server reboot is required",explanation:"A reboot is required to complete updates"},
       {key:"container",active:body.metrics.containers.some(c=>!c.running),severity:"HIGH",category:"CONTAINER",title:"Container is stopped",explanation:"One or more monitored containers are not running"}
@@ -267,6 +265,11 @@ const logRoles=["ADMIN","AUDITOR","OPERATOR"];
 const logQuerySchema=z.object({source:z.string().max(40).optional(),event:z.string().max(80).optional(),actor:z.string().max(150).optional(),srcIp:z.string().max(64).optional(),result:z.string().max(40).optional(),host:z.string().max(253).optional(),from:z.string().datetime().optional(),to:z.string().datetime().optional(),limit:z.coerce.number().int().min(1).max(1000).optional()});
 app.get("/api/logs",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Administrator, auditor or operator role required"});const query=parse(logQuerySchema,request.query,reply);if(!query)return;return{events:queryLogs(query)}});
 app.get("/api/logs/summary",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Administrator, auditor or operator role required"});const hours=Math.min(Math.max(Number((request.query as {hours?:string}).hours)||24,1),24*365);return{hours,summary:logSummary(new Date(Date.now()-hours*3600000).toISOString())}});
+
+const healthPolicySchema=z.object({warningValue:z.number().nullable(),criticalValue:z.number().nullable(),durationSeconds:z.number().int().min(0).max(86400),enabled:z.boolean()});
+app.get("/api/health",{preHandler:requireAuth},async()=>healthStatus());
+app.put("/api/health/policies/:no",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(user?.role!=="ADMIN")return reply.code(403).send({error:"Administrator role required"});const no=Number((request.params as {no:string}).no),body=parse(healthPolicySchema,request.body,reply);if(!body)return;if(!updatePolicy(no,body))return reply.code(404).send({error:"Health policy not found"});appendAuditEvent(user.id,"HEALTH_POLICY_UPDATED","health_policy",no,body);return{ok:true}});
+app.put("/api/notifications/:id/help-desk",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(user?.role!=="ADMIN")return reply.code(403).send({error:"Administrator role required"});const id=Number((request.params as {id:string}).id),body=parse(z.object({helpDesk:z.boolean()}),request.body,reply);if(!body)return;const result=db.prepare("UPDATE notifications SET help_desk=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(body.helpDesk?1:0,id);if(!result.changes)return reply.code(404).send({error:"Notification channel not found"});appendAuditEvent(user.id,"NOTIFICATION_HELP_DESK_UPDATED","notification",id,body);return{ok:true}});
 
 app.get("/api/agent/scan-jobs/next",{config:{rateLimit:{max:120,timeWindow:"1 minute"}}},async(request,reply)=>{
   const agent=authenticatedAgent(request);if(!agent)return reply.code(401).send({error:"Invalid or revoked agent token"});const now=new Date().toISOString();
@@ -662,8 +665,8 @@ app.delete("/api/share-dashboards/:id", { preHandler: requireAuth }, async (requ
 });
 
 app.get("/api/notifications", { preHandler: requireAuth }, async () => {
-  return db.prepare(`SELECT id, name, type, enabled, created_at AS createdAt
-    FROM notifications ORDER BY name`).all().map((row) => ({ ...(row as object), enabled: Boolean((row as { enabled: number }).enabled), configured: true }));
+  return db.prepare(`SELECT id, name, type, enabled, help_desk AS helpDesk, created_at AS createdAt
+    FROM notifications ORDER BY name`).all().map((row) => ({ ...(row as object), enabled: Boolean((row as { enabled: number }).enabled), helpDesk: Boolean((row as { helpDesk: number }).helpDesk), configured: true }));
 });
 
 app.post("/api/notifications", { preHandler: requireAuth }, async (request, reply) => {
@@ -713,10 +716,10 @@ app.put("/api/projects/:id/notifications", { preHandler: requireAuth }, async (r
 });
 
 app.get("/api/incidents", { preHandler: requireAuth }, async () => {
-  return db.prepare(`SELECT i.id, i.project_id AS projectId, p.name AS projectName, i.status,
+  return db.prepare(`SELECT i.id, i.project_id AS projectId, COALESCE(p.name, i.source_label) AS projectName, i.status,
     i.message,i.severity,i.owner,i.root_cause AS rootCause,i.corrective_action AS correctiveAction,i.lessons_learned AS lessonsLearned,
     i.review_status AS reviewStatus,i.reviewed_at AS reviewedAt,ru.username AS reviewedBy,i.started_at AS startedAt, i.resolved_at AS resolvedAt
-    FROM incidents i JOIN projects p ON p.id = i.project_id LEFT JOIN users ru ON ru.id=i.reviewed_by ORDER BY i.started_at DESC LIMIT 200`).all();
+    FROM incidents i LEFT JOIN projects p ON p.id = i.project_id LEFT JOIN users ru ON ru.id=i.reviewed_by ORDER BY i.started_at DESC LIMIT 200`).all();
 });
 app.put("/api/incidents/:id/review",{preHandler:requireAuth},async(request,reply)=>{const id=Number((request.params as {id:string}).id),body=parse(incidentReviewSchema,request.body,reply);if(!body)return;const existing=db.prepare("SELECT id,review_status AS reviewStatus FROM incidents WHERE id=?").get(id) as {id:number;reviewStatus:string}|undefined;if(!existing)return reply.code(404).send({error:"Incident not found"});const now=new Date().toISOString(),reviewer=body.reviewStatus==="APPROVED"?actor(request):null;db.prepare(`UPDATE incidents SET severity=?,owner=?,root_cause=?,corrective_action=?,lessons_learned=?,review_status=?,reviewed_by=?,reviewed_at=? WHERE id=?`).run(body.severity,body.owner??null,body.rootCause??null,body.correctiveAction??null,body.lessonsLearned??null,body.reviewStatus,reviewer,reviewer?now:null,id);appendAuditEvent(actor(request),"INCIDENT_REVIEW_UPDATED","incident",id,{previousStatus:existing.reviewStatus,reviewStatus:body.reviewStatus,severity:body.severity,owner:body.owner});return {ok:true}});
 
@@ -825,8 +828,8 @@ app.get("/api/audit/export", { preHandler: requireAuth }, async (request, reply)
     last_status, last_checked_at FROM projects ORDER BY name`).all() as Array<Record<string, unknown>>;
   const heartbeats = db.prepare(`SELECT h.id, p.name AS asset, h.status, h.http_status, h.response_time_ms, h.attempt,
     h.checked_at FROM heartbeats h JOIN projects p ON p.id=h.project_id WHERE h.checked_at BETWEEN ? AND ? ORDER BY h.checked_at`).all(from, to) as Array<Record<string, unknown>>;
-  const incidentsExport = db.prepare(`SELECT i.id,p.name AS asset,i.status,i.severity,i.owner,i.message,i.root_cause,i.corrective_action,i.lessons_learned,i.review_status,i.started_at,i.resolved_at
-    FROM incidents i JOIN projects p ON p.id=i.project_id WHERE i.started_at BETWEEN ? AND ? ORDER BY i.started_at`).all(from, to) as Array<Record<string, unknown>>;
+  const incidentsExport = db.prepare(`SELECT i.id,COALESCE(p.name,i.source_label) AS asset,i.status,i.severity,i.owner,i.message,i.root_cause,i.corrective_action,i.lessons_learned,i.review_status,i.started_at,i.resolved_at
+    FROM incidents i LEFT JOIN projects p ON p.id=i.project_id WHERE i.started_at BETWEEN ? AND ? ORDER BY i.started_at`).all(from, to) as Array<Record<string, unknown>>;
   const mappings = db.prepare(`SELECT p.name AS asset, c.framework, c.code, c.title, pc.evidence_note
     FROM project_controls pc JOIN projects p ON p.id=pc.project_id JOIN iso_controls c ON c.id=pc.control_id ORDER BY c.code,p.name`).all() as Array<Record<string, unknown>>;
   const events = db.prepare(`SELECT a.id,u.username AS actor,a.action,a.entity_type,a.entity_id,a.details_json,a.previous_hash,a.event_hash,a.created_at
