@@ -8,7 +8,7 @@ export type Policy = {
   no: number; nameTh: string; nameEn: string; checkTh: string; frequencyTh: string; metricKey: string; unit: string;
   direction: "HIGH" | "LOW"; warningValue: number | null; criticalValue: number | null; warningInclusive: number; durationSeconds: number; enabled: number;
 };
-export type Subject = { key: string; agentId?: number; label: string; value: number | null; observedAt: string | null; sustained?: boolean; note?: string; staleMs?: number; forceLevel?: Level };
+export type Subject = { key: string; agentId?: number; label: string; value: number | null; observedAt: string | null; sustained?: boolean; note?: string; staleMs?: number; forceLevel?: Level; detail?: string };
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS health_policies (
@@ -132,7 +132,7 @@ function pingSubjects(p: Policy): Subject[] {
   return rows.map((r) => {
     const loss = r.loss ?? 0;
     const forceLevel: Level | undefined = r.status === "DOWN" || loss >= 50 ? "CRITICAL" : loss > 0 && r.ms !== null && classify(r.ms, p) === "NORMAL" ? "WARNING" : undefined;
-    return { key: `project:${r.id}`, label: loss > 0 ? `${r.name} (loss ${loss}%)` : r.name, value: r.ms, observedAt: r.at, staleMs: Math.max(STALE_MS, r.interval * 2000), forceLevel };
+    return { key: `project:${r.id}`, label: r.name, detail: loss > 0 ? `loss ${loss}%` : undefined, value: r.ms, observedAt: r.at, staleMs: Math.max(STALE_MS, r.interval * 2000), forceLevel };
   });
 }
 
@@ -142,7 +142,7 @@ function mongoSubjects(): Subject[] {
     JOIN database_metrics m ON m.id=(SELECT id FROM database_metrics WHERE project_id=p.id ORDER BY observed_at DESC LIMIT 1)
     WHERE p.monitor_type='DATABASE' AND p.database_engine='MONGODB' AND p.enabled=1 AND p.maintenance=0`).all() as Array<{ id: number; name: string; interval: number; used: number | null; max: number | null; lag: number | null; at: string }>;
   return rows.map((r) => ({
-    key: `project:${r.id}`, label: r.lag === null ? r.name : `${r.name} (lag ${r.lag}s)`, observedAt: r.at, staleMs: Math.max(STALE_MS, r.interval * 2000),
+    key: `project:${r.id}`, label: r.name, detail: r.lag === null ? undefined : `lag ${r.lag}s`, observedAt: r.at, staleMs: Math.max(STALE_MS, r.interval * 2000),
     value: r.used !== null && r.max ? Math.round((r.used / r.max) * 10000) / 100 : null,
     forceLevel: r.lag !== null && r.lag > 5 ? "CRITICAL" as Level : undefined
   }));
@@ -163,7 +163,7 @@ function logSyncSubjects(_p: Policy, now: Date): Subject[] {
     const last = (db.prepare("SELECT MAX(occurred_at) AS at FROM log_events WHERE source=?").get(source) as { at: string | null }).at;
     return last
       ? { key: `source:${source}`, label: source, value: Math.max(0, Math.round((now.getTime() - new Date(last).getTime()) / 6000) / 10), observedAt: now.toISOString() }
-      : { key: `source:${source}`, label: `${source} (no logs received)`, value: null, observedAt: now.toISOString(), forceLevel: "CRITICAL" as Level };
+      : { key: `source:${source}`, label: source, detail: "no logs received", value: null, observedAt: now.toISOString(), forceLevel: "CRITICAL" as Level };
   });
 }
 
@@ -206,7 +206,8 @@ const pending: Array<() => Promise<void>> = [];
 function transition(p: Policy, s: ReturnType<typeof evaluateSubjects>[number], from: Level | null, now: string) {
   db.prepare("INSERT INTO health_history(policy_no,subject_key,label,from_level,to_level,value,at) VALUES(?,?,?,?,?,?,?)").run(p.no, s.key, s.label, from, s.level, s.value, now);
   appendAuditEvent(null, "HEALTH_LEVEL_CHANGED", "health_policy", p.no, { subject: s.label, from, to: s.level, value: s.value, unit: p.unit });
-  const source = `${p.nameEn} · ${s.label}`, text = `${p.no}. ${p.nameTh}\n${s.label}: ${withUnit(s.value, p.unit)} → ${s.level}`;
+  // The incident's source_label must stay the same while the situation changes, so it uses the stable label; details (loss, lag) only go in text.
+  const source = `${p.nameEn} · ${s.label}`, name = s.detail ? `${s.label} (${s.detail})` : s.label, text = `${p.no}. ${p.nameTh}\n${name}: ${withUnit(s.value, p.unit)} → ${s.level}`;
   const findingKey = `health_${p.metricKey}`;
   if (s.level === "NORMAL") {
     if (s.agentId) db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=?,last_detected_at=? WHERE agent_id=? AND finding_key=? AND status='OPEN'").run(now, now, s.agentId, findingKey);
@@ -217,10 +218,10 @@ function transition(p: Policy, s: ReturnType<typeof evaluateSubjects>[number], f
   if (s.level !== "WARNING" && s.level !== "CRITICAL") return;
   if (s.agentId) db.prepare(`INSERT INTO compliance_findings(agent_id,finding_key,category,severity,status,title,explanation,first_detected_at,last_detected_at)
     VALUES(?,?,'HEALTH',?,'OPEN',?,?,?,?) ON CONFLICT(agent_id,finding_key) DO UPDATE SET severity=excluded.severity,status='OPEN',title=excluded.title,explanation=excluded.explanation,last_detected_at=excluded.last_detected_at,resolved_at=NULL`)
-    .run(s.agentId, findingKey, s.level === "CRITICAL" ? "CRITICAL" : "MEDIUM", p.nameEn, `${s.label}: ${withUnit(s.value, p.unit)} (${s.level})`, now, now);
+    .run(s.agentId, findingKey, s.level === "CRITICAL" ? "CRITICAL" : "MEDIUM", p.nameEn, `${name}: ${withUnit(s.value, p.unit)} (${s.level})`, now, now);
   if (s.level === "CRITICAL") {
     const open = db.prepare("SELECT id FROM incidents WHERE health_policy_no=? AND source_label=? AND resolved_at IS NULL").get(p.no, source);
-    if (!open) db.prepare("INSERT INTO incidents(project_id,status,message,started_at,severity,health_policy_no,source_label) VALUES(NULL,'CRITICAL',?,?,'HIGH',?,?)").run(`${s.label}: ${withUnit(s.value, p.unit)} exceeds the Critical threshold`, now, p.no, source);
+    if (!open) db.prepare("INSERT INTO incidents(project_id,status,message,started_at,severity,health_policy_no,source_label) VALUES(NULL,'CRITICAL',?,?,'HIGH',?,?)").run(`${name}: ${withUnit(s.value, p.unit)} exceeds the Critical threshold`, now, p.no, source);
     pending.push(() => dispatchHealthNotification("HEALTH_CRITICAL", `🔴 ${text}\nIncident Process required`));
   } else pending.push(() => dispatchHealthNotification("HEALTH_WARNING", `🟡 ${text}\nPlease check or open a Help desk ticket`));
 }
@@ -238,9 +239,9 @@ export function evaluateHealth(now = new Date()) {
       const prev = db.prepare("SELECT level,since FROM health_state WHERE policy_no=? AND subject_key=?").get(p.no, s.key) as { level: Level; since: string } | undefined;
       if (s.level === "NO_DATA" && prev) { db.prepare("UPDATE health_state SET evaluated_at=?,note='stale' WHERE policy_no=? AND subject_key=?").run(stamp, p.no, s.key); continue; } // keep the last actionable level
       const changed = prev?.level !== s.level;
-      db.prepare(`INSERT INTO health_state(policy_no,subject_key,label,level,value,note,since,evaluated_at) VALUES(?,?,?,?,?,NULL,?,?)
-        ON CONFLICT(policy_no,subject_key) DO UPDATE SET label=excluded.label,level=excluded.level,value=excluded.value,note=NULL,since=CASE WHEN ?=1 THEN excluded.since ELSE health_state.since END,evaluated_at=excluded.evaluated_at`)
-        .run(p.no, s.key, s.label, s.level, s.value, stamp, stamp, changed ? 1 : 0);
+      db.prepare(`INSERT INTO health_state(policy_no,subject_key,label,level,value,note,since,evaluated_at) VALUES(?,?,?,?,?,?,?,?)
+        ON CONFLICT(policy_no,subject_key) DO UPDATE SET label=excluded.label,level=excluded.level,value=excluded.value,note=excluded.note,since=CASE WHEN ?=1 THEN excluded.since ELSE health_state.since END,evaluated_at=excluded.evaluated_at`)
+        .run(p.no, s.key, s.label, s.level, s.value, s.detail ?? null, stamp, stamp, changed ? 1 : 0);
       if (changed && !(s.level === "NORMAL" && (!prev || prev.level === "NO_DATA"))) transition(p, s, prev?.level ?? null, stamp);
       }
     }
@@ -267,7 +268,7 @@ export function thresholdText(p: Pick<Policy, "direction" | "warningValue" | "cr
 export function healthRows() {
   return healthStatus().items.map((i) => ({
     no: i.no, itemEn: i.nameEn, itemTh: i.nameTh, level: i.level,
-    measured: i.subjects.length ? i.subjects.map((s) => `${s.label}: ${withUnit(s.value, i.unit)}`).join("; ") : "—",
+    measured: i.subjects.length ? i.subjects.map((s) => `${s.label}${s.note && s.note !== "stale" ? ` (${s.note})` : ""}: ${withUnit(s.value, i.unit)}`).join("; ") : "—",
     normal: i.thresholds.normal, warning: i.thresholds.warning, critical: i.thresholds.critical, frequency: i.frequencyTh
   }));
 }
