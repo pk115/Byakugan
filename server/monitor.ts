@@ -26,6 +26,7 @@ type CheckResult = {
   message: string;
   attempt: number;
   databaseMetrics?: DatabaseMetrics;
+  metricValue?: number;
 };
 const execFileAsync = promisify(execFile);
 
@@ -133,16 +134,16 @@ async function attemptSslCheck(project: ProjectRow, attempt: number): Promise<Ch
   return new Promise((resolve) => {
     if (!project.target) return resolve({ status: "DOWN", httpStatus: null, responseTimeMs: 0, message: "SSL hostname is missing", attempt });
     const socket = tlsConnect({ host: project.target, port: project.ssl_port, servername: project.target, rejectUnauthorized: true });
-    const finish = (status: "UP" | "DOWN", message: string) => {
+    const finish = (status: "UP" | "DOWN", message: string, metricValue?: number) => {
       const responseTimeMs = Math.round(performance.now() - started);
-      socket.destroy(); resolve({ status, httpStatus: null, responseTimeMs, message, attempt });
+      socket.destroy(); resolve({ status, httpStatus: null, responseTimeMs, message, attempt, metricValue });
     };
     socket.setTimeout(project.timeout_seconds * 1000);
     socket.once("secureConnect", () => {
       const cert = socket.getPeerCertificate();
       const expires = new Date(cert.valid_to);
       const days = Math.floor((expires.getTime() - Date.now()) / 86400000);
-      finish(days < project.ssl_expiry_days ? "DOWN" : "UP", days < project.ssl_expiry_days ? `Certificate expires in ${days} day(s)` : `Certificate valid for ${days} day(s)`);
+      finish(days < project.ssl_expiry_days ? "DOWN" : "UP", days < project.ssl_expiry_days ? `Certificate expires in ${days} day(s)` : `Certificate valid for ${days} day(s)`, days);
     });
     socket.once("timeout", () => finish("DOWN", "TLS connection timed out"));
     socket.once("error", (error) => finish("DOWN", error.message));
@@ -244,10 +245,10 @@ export async function checkProject(projectId: number): Promise<CheckResult> {
     const previousStatus = project.last_status;
     const transaction = db.transaction(() => {
       db.prepare(`INSERT INTO heartbeats
-        (project_id, status, http_status, response_time_ms, attempt, error_message, checked_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        (project_id, status, http_status, response_time_ms, attempt, error_message, checked_at, metric_value)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(project.id, result.status, result.httpStatus, result.responseTimeMs, result.attempt,
-          result.status === "UP" ? null : result.message, now.toISOString());
+          result.status === "UP" ? null : result.message, now.toISOString(), result.metricValue ?? null);
       db.prepare(`UPDATE projects SET last_status = ?, last_message = ?, last_checked_at = ?,
         next_check_at = ?, consecutive_failures = ?, updated_at = ? WHERE id = ?`)
         .run(result.status, result.message, now.toISOString(), next.toISOString(), result.status === "UP" ? 0 : project.consecutive_failures + 1, now.toISOString(), project.id);

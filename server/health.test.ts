@@ -64,6 +64,39 @@ describe("health engine", () => {
     expect((db.prepare("SELECT COUNT(*) AS n FROM health_history").get() as { n: number }).n).toBe(before);
   });
 
+  it("judges SSL days left, monthly SLA and backups", async () => {
+    const logs = await import("./log-events.js");
+    const now = new Date(), iso = (minutesAgo: number) => new Date(now.getTime() - minutesAgo * 60000).toISOString();
+    const project = (name: string, type: string) => Number(db.prepare("INSERT INTO projects(name,monitor_type,target,supabase_url,encrypted_key,interval_seconds) VALUES(?,?,?,?,?,60)").run(name, type, "example.test", "https://x.test", "k").lastInsertRowid);
+    const beat = (id: number, status: string, at: string, metric: number | null = null) => db.prepare("INSERT INTO heartbeats(project_id,status,response_time_ms,attempt,checked_at,metric_value) VALUES(?,?,10,1,?,?)").run(id, status, at, metric);
+
+    const ssl = project("cert", "SSL");
+    beat(ssl, "UP", iso(1), 20);
+    health.evaluateHealth();
+    expect(state(8)).toBe("WARNING"); // 15-30 days
+    beat(ssl, "DOWN", iso(0), 10);
+    health.evaluateHealth();
+    expect(state(8)).toBe("CRITICAL"); // under 15 days
+
+    const web = project("web", "HTTP");
+    for (let i = 0; i < 1000; i++) beat(web, i < 2 ? "DOWN" : "UP", iso(0)); // 99.8 %
+    health.evaluateHealth();
+    expect((db.prepare("SELECT level FROM health_state WHERE policy_no=9 AND label='web'").get() as { level: string }).level).toBe("WARNING");
+
+    const agent = Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('log-agent','h2')").run().lastInsertRowid);
+    const backup = (event: string, minutesAgo: number) => logs.ingestLogs(agent, [{ source: "db", event, timestamp: iso(minutesAgo), host: "db1", severity: "info", details: { database: "cms", file: "x.dump", size_mb: 12 } }]);
+    backup("DB_BACKUP_COMPLETE", 60);
+    health.evaluateHealth();
+    expect(state(10)).toBe("NORMAL");
+    backup("DB_BACKUP_FAILED", 1);
+    health.evaluateHealth();
+    expect(state(10)).toBe("CRITICAL"); // latest backup failed
+    backup("DB_BACKUP_COMPLETE", 0);
+    health.evaluateHealth();
+    expect(state(10)).toBe("NORMAL");
+    expect((db.prepare("SELECT COUNT(*) AS n FROM backup_evidence WHERE asset_name='cms'").get() as { n: number }).n).toBe(3);
+  });
+
   it("reports all ten items and leaves unmeasured ones as NO_DATA", () => {
     const status = health.healthStatus();
     expect(status.items).toHaveLength(10);

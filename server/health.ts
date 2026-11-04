@@ -7,7 +7,7 @@ export type Policy = {
   no: number; nameTh: string; nameEn: string; checkTh: string; frequencyTh: string; metricKey: string; unit: string;
   direction: "HIGH" | "LOW"; warningValue: number | null; criticalValue: number | null; warningInclusive: number; durationSeconds: number; enabled: number;
 };
-export type Subject = { key: string; agentId?: number; label: string; value: number | null; observedAt: string | null; sustained?: boolean; note?: string };
+export type Subject = { key: string; agentId?: number; label: string; value: number | null; observedAt: string | null; sustained?: boolean; note?: string; staleMs?: number; forceLevel?: Level };
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS health_policies (
@@ -39,10 +39,12 @@ const SEED: Array<[number, string, string, string, string, string, string, "HIGH
   [7, "Centralized Audit Logs Sync", "Centralized audit logs sync", "ตรวจเช็คการบันทึก Log และการจัดเก็บ Event Logs 90 วัน", "ทุกวัน", "log_gap_minutes", "min", "HIGH", 5, 60, 0, 0],
   [8, "SSL/TLS Domain Certificate", "SSL/TLS certificate expiry", "ตรวจเช็ควันหมดอายุ SSL โดเมนผ่าน Uptime Kuma (TLS Monitor)", "ทุกเดือน", "ssl_days_left", "days", "LOW", 30, 15, 1, 0],
   [9, "NIPA Cloud Service Uptime SLA", "Service uptime SLA", "ตรวจเช็ค Uptime SLA รายเดือนผ่าน Uptime Kuma & NIPA Status Page", "ทุกเดือน", "uptime_sla_percent", "%", "LOW", 99.9, 99.0, 0, 0],
-  [10, "Automated Cloud Backup Status", "Automated cloud backup status", "ตรวจเช็ครายงาน Daily Snapshot Backup บน NIPA Cloud / Windows Backup", "ทุกวัน", "backup_age_hours", "h", "HIGH", 24, 48, 0, 0]
+  [10, "Automated Cloud Backup Status", "Automated cloud backup status", "ตรวจเช็ครายงาน Daily Snapshot Backup บน NIPA Cloud / Windows Backup", "ทุกวัน", "backup_age_ratio", "x", "HIGH", 1, 2, 0, 0]
 ];
 const seed = db.prepare("INSERT OR IGNORE INTO health_policies(no,name_th,name_en,check_th,frequency_th,metric_key,unit,direction,warning_value,critical_value,warning_inclusive,duration_seconds) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)");
 db.transaction(() => { for (const row of SEED) seed.run(...row); })();
+// Item 10 first shipped as absolute hours; it is now age / the connector's own max_age_hours (late > 1x, critical > 2x or failed).
+db.prepare("UPDATE health_policies SET metric_key='backup_age_ratio',unit='x',warning_value=1,critical_value=2 WHERE no=10 AND metric_key='backup_age_hours'").run();
 
 // The old single-tier cpu/memory/disk findings are replaced by the policy engine (keys health_*).
 db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=CURRENT_TIMESTAMP WHERE finding_key IN ('cpu','memory','disk') AND status='OPEN'").run();
@@ -87,7 +89,43 @@ function diskCSubjects(): Subject[] {
   });
 }
 
+function sslSubjects(): Subject[] {
+  const rows = db.prepare(`SELECT p.id,p.name,p.interval_seconds AS interval,h.metric_value AS days,h.checked_at AS at FROM projects p
+    JOIN heartbeats h ON h.id=(SELECT id FROM heartbeats WHERE project_id=p.id AND metric_value IS NOT NULL ORDER BY checked_at DESC LIMIT 1)
+    WHERE p.monitor_type='SSL' AND p.enabled=1`).all() as Array<{ id: number; name: string; interval: number; days: number; at: string }>;
+  return rows.map((r) => ({ key: `project:${r.id}`, label: r.name, value: r.days, observedAt: r.at, staleMs: Math.max(STALE_MS, r.interval * 2000) }));
+}
+
+// ponytail: calendar month in UTC, counted by check results (not wall-clock downtime); needs 20+ checks before it judges.
+function slaSubjects(_p: Policy, now: Date): Subject[] {
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  const rows = db.prepare(`SELECT p.id,p.name,SUM(h.status='UP') AS up,COUNT(*) AS total FROM projects p JOIN heartbeats h ON h.project_id=p.id
+    WHERE p.enabled=1 AND p.maintenance=0 AND h.status!='PAUSED' AND h.checked_at>=? GROUP BY p.id`).all(monthStart) as Array<{ id: number; name: string; up: number; total: number }>;
+  return rows.map((r) => ({ key: `project:${r.id}`, label: r.name, value: r.total >= 20 ? Math.round((r.up / r.total) * 10000) / 100 : null, observedAt: now.toISOString() }));
+}
+
+function backupSubjects(_p: Policy, now: Date): Subject[] {
+  const rows = [
+    ...(db.prepare(`SELECT 'connector:'||c.id AS key,c.name,c.max_age_hours AS maxAge,c.created_at AS created,
+      (SELECT MAX(completed_at) FROM backup_evidence WHERE connector_id=c.id AND status='SUCCESS') AS lastOk,
+      (SELECT status FROM backup_evidence WHERE connector_id=c.id ORDER BY COALESCE(completed_at,started_at) DESC,id DESC LIMIT 1) AS latest
+      FROM backup_connectors c WHERE c.enabled=1 AND c.revoked_at IS NULL`).all() as Array<{ key: string; name: string; maxAge: number; created: string; lastOk: string | null; latest: string | null }>),
+    // Evidence created from DB_BACKUP_* log events has no connector; judge it against a 24 h schedule.
+    ...(db.prepare(`SELECT 'asset:'||b.asset_name AS key,b.asset_name AS name,24 AS maxAge,MIN(b.created_at) AS created,
+      MAX(CASE WHEN b.status='SUCCESS' THEN b.completed_at END) AS lastOk,
+      (SELECT status FROM backup_evidence b2 WHERE b2.asset_name=b.asset_name AND b2.connector_id IS NULL ORDER BY COALESCE(b2.completed_at,b2.started_at) DESC,b2.id DESC LIMIT 1) AS latest
+      FROM backup_evidence b WHERE b.connector_id IS NULL GROUP BY b.asset_name`).all() as Array<{ key: string; name: string; maxAge: number; created: string; lastOk: string | null; latest: string | null }>)
+  ];
+  return rows.map((r) => {
+    const ageHours = (now.getTime() - new Date(r.lastOk ?? r.created).getTime()) / 3600000;
+    return { key: r.key, label: r.name, value: Math.round((ageHours / r.maxAge) * 100) / 100, observedAt: now.toISOString(), forceLevel: r.latest === "FAILED" ? "CRITICAL" as Level : undefined };
+  });
+}
+
 const evaluators: Record<string, (p: Policy, now: Date) => Subject[]> = {
+  ssl_days_left: sslSubjects,
+  uptime_sla_percent: slaSubjects,
+  backup_age_ratio: backupSubjects,
   cpu_percent: cpuSubjects,
   ram_percent: () => hostAgents().map((a) => ({ key: `agent:${a.id}`, agentId: a.id, label: a.name, value: a.memory, observedAt: a.observedAt })),
   disk_c_free_percent: diskCSubjects
@@ -100,8 +138,9 @@ export const worst = (levels: Level[]): Level => levels.reduce<Level>((a, b) => 
 export function evaluateSubjects(p: Policy, now = new Date()) {
   const subjects = evaluators[p.metricKey]?.(p, now) ?? [];
   return subjects.map((s) => {
-    const stale = !s.observedAt || now.getTime() - new Date(s.observedAt).getTime() > STALE_MS;
+    const stale = !s.observedAt || now.getTime() - new Date(s.observedAt).getTime() > (s.staleMs ?? STALE_MS);
     let level: Level = stale || s.value === null ? "NO_DATA" : classify(s.value, p);
+    if (level !== "NO_DATA" && s.forceLevel) level = s.forceLevel; // e.g. latest backup FAILED
     if (level === "CRITICAL" && p.direction === "HIGH" && s.sustained === false) level = "WARNING"; // not yet sustained for the full duration
     return { ...s, level };
   });
@@ -135,7 +174,12 @@ export function evaluateHealth(now = new Date()) {
   const stamp = now.toISOString();
   const policies = db.prepare(`${POLICY_SQL} WHERE enabled=1`).all() as Policy[];
   db.transaction(() => {
-    for (const p of policies) for (const s of evaluateSubjects(p, now)) {
+    for (const p of policies) {
+      const subjects = evaluateSubjects(p, now);
+      const keep = new Set(subjects.map((s) => s.key));
+      for (const row of db.prepare("SELECT subject_key AS k FROM health_state WHERE policy_no=?").all(p.no) as Array<{ k: string }>) // subject was removed (agent revoked, monitor deleted)
+        if (!keep.has(row.k)) db.prepare("DELETE FROM health_state WHERE policy_no=? AND subject_key=?").run(p.no, row.k);
+      for (const s of subjects) {
       const prev = db.prepare("SELECT level,since FROM health_state WHERE policy_no=? AND subject_key=?").get(p.no, s.key) as { level: Level; since: string } | undefined;
       if (s.level === "NO_DATA" && prev) { db.prepare("UPDATE health_state SET evaluated_at=?,note='stale' WHERE policy_no=? AND subject_key=?").run(stamp, p.no, s.key); continue; } // keep the last actionable level
       const changed = prev?.level !== s.level;
@@ -143,6 +187,7 @@ export function evaluateHealth(now = new Date()) {
         ON CONFLICT(policy_no,subject_key) DO UPDATE SET label=excluded.label,level=excluded.level,value=excluded.value,note=NULL,since=CASE WHEN ?=1 THEN excluded.since ELSE health_state.since END,evaluated_at=excluded.evaluated_at`)
         .run(p.no, s.key, s.label, s.level, s.value, stamp, stamp, changed ? 1 : 0);
       if (changed && !(s.level === "NORMAL" && (!prev || prev.level === "NO_DATA"))) transition(p, s, prev?.level ?? null, stamp);
+      }
     }
   })();
   return pending.splice(0);

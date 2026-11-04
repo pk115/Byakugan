@@ -139,6 +139,7 @@ ensureColumn("incidents", "review_status", "TEXT NOT NULL DEFAULT 'PENDING'");
 ensureColumn("incidents", "reviewed_by", "INTEGER");
 ensureColumn("incidents", "reviewed_at", "TEXT");
 ensureColumn("notifications", "help_desk", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("heartbeats", "metric_value", "REAL"); // SSL: days until expiry
 // Health Check incidents have no monitor: rebuild once so project_id can be NULL (nothing references incidents).
 if ((db.pragma("table_info(incidents)") as Array<{ name: string; notnull: number }>).find((c) => c.name === "project_id")?.notnull) {
   db.transaction(() => db.exec(`

@@ -50,10 +50,20 @@ export function ingestLogs(agentId: number, events: LogEvent[]) {
       const hash = createHash("sha256")
         .update(JSON.stringify([e.source, e.event, e.timestamp, e.host ?? null, e.actor ?? null, e.srcIp ?? null, e.result ?? null, details]))
         .digest("hex");
-      accepted += insert.run(agentId, hash, e.source, e.event, e.host ?? null, e.actor ?? null, e.srcIp ?? null, e.result ?? null, e.severity, details, e.timestamp).changes;
+      const added = insert.run(agentId, hash, e.source, e.event, e.host ?? null, e.actor ?? null, e.srcIp ?? null, e.result ?? null, e.severity, details, e.timestamp).changes;
+      accepted += added;
+      if (added && (e.event === "DB_BACKUP_COMPLETE" || e.event === "DB_BACKUP_FAILED")) recordBackup(e);
     }
   })();
   return { accepted, duplicates: events.length - accepted };
+}
+
+// Health item 10 reads backup_evidence, so database backup log events become evidence rows (once per new event).
+function recordBackup(e: LogEvent) {
+  const d = e.details, ok = e.event === "DB_BACKUP_COMPLETE", size = Number(d.size_mb);
+  db.prepare(`INSERT INTO backup_evidence(asset_name,backup_type,storage_location,status,started_at,completed_at,size_bytes,checksum,notes)
+    VALUES(?,'DATABASE',?,?,?,?,?,?,?)`).run(String(d.database ?? e.host ?? "database"), String(d.file ?? "log event"), ok ? "SUCCESS" : "FAILED", e.timestamp, ok ? e.timestamp : null,
+    Number.isFinite(size) && size > 0 ? Math.round(size * 1048576) : null, d.sha256 ? String(d.sha256) : null, ok ? null : String(d.error ?? "backup failed"));
 }
 
 const AUTH_FAILURES = ["SSH_LOGIN_FAILED", "SUDO_AUTH_FAILED", "ROOT_LOGIN_DENIED", "VPN_AUTH_FAILED", "DB_AUTH_FAILED", "LOGIN_FAILED"];
