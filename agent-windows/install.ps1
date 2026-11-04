@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $target = Join-Path $env:ProgramData "Byakugan"
 New-Item -ItemType Directory -Path $target -Force | Out-Null
 $configFile = Join-Path $target "agent.json"
+$existing = if (Test-Path -LiteralPath $configFile) { Get-Content -LiteralPath $configFile -Raw | ConvertFrom-Json } else { $null }
 if ((!$Url -or !$Token) -and (Test-Path -LiteralPath $configFile)) {
     $existing = Get-Content -LiteralPath $configFile -Raw | ConvertFrom-Json
     if (!$Url) { $Url = [string]$existing.url }
@@ -36,7 +37,9 @@ $bin = Join-Path $target "bin"
 New-Item -ItemType Directory -Path $bin -Force | Out-Null
 Expand-Archive -LiteralPath $trivyArchive -DestinationPath $bin -Force
 Remove-Item -LiteralPath $trivyArchive,$trivyChecksums -Force -ErrorAction SilentlyContinue
-@{ url=$Url.TrimEnd('/'); token=$Token; intervalSeconds=$IntervalSeconds; scanPollSeconds=15 } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
+$settings = @{ url=$Url.TrimEnd('/'); token=$Token; intervalSeconds=$IntervalSeconds; scanPollSeconds=15 }
+if ($existing) { foreach ($k in 'logs','logIntervalSeconds','logBackfillHours') { if ($null -ne $existing.$k) { $settings[$k] = $existing.$k } } }  # keep log settings on repair
+$settings | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
 & icacls.exe $target /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
 $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$target\byakugan-agent.ps1`""
 $trigger = New-ScheduledTaskTrigger -AtStartup

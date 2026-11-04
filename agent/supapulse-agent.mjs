@@ -3,6 +3,7 @@ import os from "node:os";
 import { readFile, access } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { collectLogs } from "./log-collector.mjs";
 
 const exec = promisify(execFile);
 const endpoint = process.env.SUPAPULSE_URL?.replace(/\/$/, "");
@@ -10,6 +11,7 @@ const token = process.env.SUPAPULSE_AGENT_TOKEN;
 const intervalSeconds = Math.max(60, Number(process.env.SUPAPULSE_AGENT_INTERVAL ?? 300));
 const jobPollSeconds = Math.max(5, Number(process.env.SUPAPULSE_SCAN_POLL_INTERVAL ?? 15));
 const trivyTarget = process.env.SUPAPULSE_TRIVY_TARGET;
+const logIntervalSeconds = Math.max(10, Number(process.env.SUPAPULSE_LOG_INTERVAL ?? 30));
 if (!endpoint || !token) throw new Error("SUPAPULSE_URL and SUPAPULSE_AGENT_TOKEN are required");
 
 async function command(file, args, timeout = 10000) { try { return (await exec(file, args, { timeout, maxBuffer: 5_000_000 })).stdout.trim(); } catch { return ""; } }
@@ -59,7 +61,27 @@ async function collect() {
   const [cpu, diskValues, containerValues, patch, osRelease, vulnerabilities] = await Promise.all([cpuPercent(),disks(),containers(),updates(),readFile("/etc/os-release","utf8").catch(()=>""),vulnerabilityScan()]);
   const osFields=Object.fromEntries(osRelease.split("\n").filter(line=>line.includes("=")).map(line=>{const [key,...rest]=line.split("=");return[key,rest.join("=").replace(/^"|"$/g,"")]}));
   const total=os.totalmem();const free=os.freemem();
-  return {agentVersion:"0.3.1",observedAt:new Date().toISOString(),hostname:os.hostname(),inventory:{osName:osFields.PRETTY_NAME||os.type(),osVersion:osFields.VERSION_ID||os.release(),kernel:os.release(),architecture:os.arch(),cpuModel:os.cpus()[0]?.model||"unknown",cpuCount:os.cpus().length,totalMemoryBytes:total,...patch,rebootRequired:await exists("/var/run/reboot-required"),dockerAvailable:containerValues.length>0||Boolean(await command("docker",["version","--format","{{.Server.Version}}"]))},metrics:{cpuPercent:cpu,memoryPercent:Math.round((total-free)/total*10000)/100,swapPercent:null,load1:os.loadavg()[0],load5:os.loadavg()[1],load15:os.loadavg()[2],uptimeSeconds:Math.floor(os.uptime()),disks:diskValues,containers:containerValues},...(vulnerabilities?{vulnerabilityScan:vulnerabilities}:{})};
+  return {agentVersion:"0.4.0",observedAt:new Date().toISOString(),hostname:os.hostname(),inventory:{osName:osFields.PRETTY_NAME||os.type(),osVersion:osFields.VERSION_ID||os.release(),kernel:os.release(),architecture:os.arch(),cpuModel:os.cpus()[0]?.model||"unknown",cpuCount:os.cpus().length,totalMemoryBytes:total,...patch,rebootRequired:await exists("/var/run/reboot-required"),dockerAvailable:containerValues.length>0||Boolean(await command("docker",["version","--format","{{.Server.Version}}"]))},metrics:{cpuPercent:cpu,memoryPercent:Math.round((total-free)/total*10000)/100,swapPercent:null,load1:os.loadavg()[0],load5:os.loadavg()[1],load15:os.loadavg()[2],uptimeSeconds:Math.floor(os.uptime()),disks:diskValues,containers:containerValues},...(vulnerabilities?{vulnerabilityScan:vulnerabilities}:{})};
+}
+
+// Log shipping: auth.log (sshd/sudo), nginx access log (SUPAPULSE_NGINX_LOG), journald service state -> POST /api/agent/logs.
+async function firstExisting(paths){for(const p of paths.filter(Boolean))if(await exists(p))return p}
+const logConfig={
+  hostname:process.env.SUPAPULSE_HOSTNAME||(await readFile("/host/etc/hostname","utf8").catch(()=>"")).trim()||os.hostname(),
+  stateDir:process.env.SUPAPULSE_STATE_DIR||"/var/lib/byakugan-agent",
+  authLog:await firstExisting([process.env.SUPAPULSE_AUTH_LOG,"/var/log/auth.log","/var/log/secure","/host/var/log/auth.log","/host/var/log/secure"]),
+  nginxLog:process.env.SUPAPULSE_NGINX_LOG,
+  journal:process.env.SUPAPULSE_JOURNAL!=="0",journalDir:process.env.SUPAPULSE_JOURNAL_DIR||(await exists("/host/var/log/journal")?"/host/var/log/journal":undefined),
+  backfill:process.env.SUPAPULSE_LOG_BACKFILL==="1"
+};
+let logsRunning=false;
+async function shipLogs(){
+  if(logsRunning)return;logsRunning=true;
+  try{
+    const {events,commit}=await collectLogs(logConfig);
+    for(let i=0;i<events.length;i+=1000){const response=await request("/api/agent/logs",{method:"POST",body:JSON.stringify({events:events.slice(i,i+1000)})});if(!response.ok)throw new Error(`Log upload returned HTTP ${response.status}: ${await response.text()}`)}
+    await commit();if(events.length)console.log(`${new Date().toISOString()} shipped ${events.length} log event(s)`)
+  }catch(error){console.error(new Date().toISOString(),error.message)}finally{logsRunning=false}
 }
 async function send(){const payload=await collect();const response=await fetch(`${endpoint}/api/agent/ingest`,{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},body:JSON.stringify(payload)});if(!response.ok)throw new Error(`Byakugan returned HTTP ${response.status}: ${await response.text()}`);console.log(`${new Date().toISOString()} evidence sent for ${payload.hostname}`)}
-await send();void pollScanJob();setInterval(()=>send().catch(error=>console.error(new Date().toISOString(),error.message)),intervalSeconds*1000).unref();setInterval(()=>void pollScanJob(),jobPollSeconds*1000).unref();await new Promise(()=>{});
+await send();void pollScanJob();void shipLogs();setInterval(()=>void shipLogs(),logIntervalSeconds*1000).unref();setInterval(()=>send().catch(error=>console.error(new Date().toISOString(),error.message)),intervalSeconds*1000).unref();setInterval(()=>void pollScanJob(),jobPollSeconds*1000).unref();await new Promise(()=>{});

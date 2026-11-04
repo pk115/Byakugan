@@ -41,6 +41,41 @@ Invoke-WebRequest "https://raw.githubusercontent.com/pk115/Byakugan/main/agent-w
 
 The installer downloads a pinned Trivy release, verifies its SHA-256 checksum, and keeps it in the protected Byakugan directory. Create or queue a filesystem/image scan from the Vulnerability Management page. Only normalized finding metadata is uploaded; file contents and secret values are not sent.
 
+## Log shipping
+
+The agent also ships security-relevant Windows events to Byakugan (`POST /api/agent/logs`) using the same event names as the Linux agent and the sample ISO log set:
+
+| Source | Event IDs | Byakugan event |
+|---|---|---|
+| Security | 4624 (interactive / RDP / unlock logons only) | `LOGIN_SUCCESS` |
+| Security | 4625 | `LOGIN_FAILED` (with `reason`, e.g. `bad_password`) |
+| Security | 4672 (non-system accounts) | `PRIVILEGE_ASSIGNED` |
+| Security | 4720 / 4732 | `USER_CREATED` / `GROUP_MEMBER_ADDED` |
+| System | 7036 running / stopped | `SERVICE_START` / `SERVICE_STOP` |
+| System | 7045 | `SERVICE_INSTALLED` |
+| Microsoft-Windows-Backup | 4 / any Error or Critical | `BACKUP_COMPLETE` / `BACKUP_FAILED` |
+
+The last processed record id per log is kept in `%ProgramData%Byakuganlog-state.json`; it is advanced only after the server accepted the batch, and duplicates are ignored server-side, so retries are safe. The service must run as `SYSTEM`/administrator to read the Security log.
+
+Optional settings in `%ProgramData%Byakuganagent.json` (preserved when the installer repairs the agent):
+
+```json
+{ "logs": true, "logIntervalSeconds": 60, "logBackfillHours": 1 }
+```
+
+- `logs`: set `false` to disable log shipping (default `true`).
+- `logIntervalSeconds`: how often new events are sent (minimum 10, default 60).
+- `logBackfillHours`: on the very first run, how far back to read (default 1).
+
+Try it without sending anything (elevated PowerShell), and run the mapping tests:
+
+```powershell
+.yakugan-agent.ps1 -LogDryRun        # prints the normalized events as JSON
+.Test-LogMapping.ps1                  # fabricated events, no server needed
+```
+
+Note: service state text in event 7036 is localized; only English `running`/`stopped` are mapped.
+
 ## Uninstall
 
 ```powershell

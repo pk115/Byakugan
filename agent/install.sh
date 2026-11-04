@@ -43,10 +43,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /:/host:ro
       - trivy-cache:/tmp/trivy-cache
+      - agent-state:/var/lib/byakugan-agent
     group_add:
       - "\${DOCKER_GID}"
 volumes:
   trivy-cache:
+  agent-state:
 EOF
 cd "$INSTALL_DIR"
 docker compose pull
