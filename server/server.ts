@@ -23,6 +23,7 @@ import * as oidcClient from "openid-client";
 import { allowedEmail, authorizationUrl, chooseRole, consumeState, oidcConfiguration, type OidcProvider, type Role } from "./oidc.js";
 import {deliveryErrorCode,testDeliveryChannel,type DeliveryConfig} from "./report-delivery.js";
 import { syncThreatIntelligence, threatIntelligenceStatus } from "./threat-intelligence.js";
+import { evaluateLogAlerts, ingestLogs, logBatchSchema, logSummary, queryLogs } from "./log-events.js";
 
 const app = Fastify({ logger: { level: config.isProduction ? "info" : "warn" }, bodyLimit: 64 * 1024 });
 await app.register(cookie);
@@ -254,6 +255,18 @@ app.post("/api/agent/ingest", { config:{rateLimit:{max:120,timeWindow:"1 minute"
   })();
   return {ok:true,receivedAt:now,nextInSeconds:300};
 });
+
+app.post("/api/agent/logs",{bodyLimit:2_000_000,config:{rateLimit:{max:120,timeWindow:"1 minute"}}},async(request,reply)=>{
+  const agent=authenticatedAgent(request);if(!agent)return reply.code(401).send({error:"Invalid or revoked agent token"});
+  const body=parse(logBatchSchema,request.body,reply);if(!body)return;
+  const limit=Date.now()+300000;if(body.events.some(e=>new Date(e.timestamp).getTime()>limit))return reply.code(400).send({error:"Log timestamp is in the future"});
+  const result=ingestLogs(agent.id,body.events);
+  return{ok:true,...result,alerts:evaluateLogAlerts(agent.id)};
+});
+const logRoles=["ADMIN","AUDITOR","OPERATOR"];
+const logQuerySchema=z.object({source:z.string().max(40).optional(),event:z.string().max(80).optional(),actor:z.string().max(150).optional(),srcIp:z.string().max(64).optional(),result:z.string().max(40).optional(),host:z.string().max(253).optional(),from:z.string().datetime().optional(),to:z.string().datetime().optional(),limit:z.coerce.number().int().min(1).max(1000).optional()});
+app.get("/api/logs",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Administrator, auditor or operator role required"});const query=parse(logQuerySchema,request.query,reply);if(!query)return;return{events:queryLogs(query)}});
+app.get("/api/logs/summary",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Administrator, auditor or operator role required"});const hours=Math.min(Math.max(Number((request.query as {hours?:string}).hours)||24,1),24*365);return{hours,summary:logSummary(new Date(Date.now()-hours*3600000).toISOString())}});
 
 app.get("/api/agent/scan-jobs/next",{config:{rateLimit:{max:120,timeWindow:"1 minute"}}},async(request,reply)=>{
   const agent=authenticatedAgent(request);if(!agent)return reply.code(401).send({error:"Invalid or revoked agent token"});const now=new Date().toISOString();
@@ -835,7 +848,9 @@ app.get("/api/audit/export", { preHandler: requireAuth }, async (request, reply)
     FROM vulnerability_scans s JOIN agents a ON a.id=s.agent_id WHERE s.observed_at BETWEEN ? AND ? ORDER BY s.observed_at`).all(from,to) as Array<Record<string,unknown>>;
   const vulnerabilities=db.prepare(`SELECT v.id,a.name AS agent,a.hostname,v.vulnerability_id,v.package_name,v.installed_version,v.fixed_version,v.severity,v.title,v.status,v.owner,v.due_at,v.risk_reason,v.risk_expires_at,v.kev,v.kev_date_added,v.kev_due_date,v.kev_ransomware,v.kev_required_action,v.epss_score,v.epss_percentile,v.threat_intel_updated_at,v.first_detected_at,v.last_detected_at,v.resolved_at
     FROM vulnerability_findings v JOIN agents a ON a.id=v.agent_id WHERE v.first_detected_at<=? AND (v.resolved_at IS NULL OR v.resolved_at>=?) ORDER BY v.severity,v.vulnerability_id`).all(to,from) as Array<Record<string,unknown>>;
-  const files: Record<string, string> = { "assets.csv": csv(assets), "heartbeats.csv": csv(heartbeats), "incidents.csv": csv(incidentsExport),
+  const logEvents=db.prepare(`SELECT l.id,a.name AS agent,l.source,l.event,l.host,l.actor,l.src_ip,l.result,l.severity,l.details_json,l.occurred_at
+    FROM log_events l JOIN agents a ON a.id=l.agent_id WHERE l.occurred_at BETWEEN ? AND ? ORDER BY l.occurred_at LIMIT 500000`).all(from,to) as Array<Record<string,unknown>>;
+  const files: Record<string, string> = { "log-events.csv":csv(logEvents), "assets.csv": csv(assets), "heartbeats.csv": csv(heartbeats), "incidents.csv": csv(incidentsExport),
     "control-mapping.csv": csv(mappings), "audit-trail.csv": csv(events),"agent-assets.csv":csv(agentAssets),"host-metrics.csv":csv(hostMetrics),
     "compliance-findings.csv":csv(findingsExport),"database-metrics.csv":csv(databaseMetrics),"report-deliveries.csv":csv(reportDeliveryEvidence),"backup-evidence.csv":csv(backups),"restore-tests.csv":csv(restores),
     "vulnerability-scans.csv":csv(vulnerabilityScans),"vulnerabilities.csv":csv(vulnerabilities) };
