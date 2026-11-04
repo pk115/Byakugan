@@ -17,14 +17,15 @@ import { checkProject } from "./monitor.js";
 import { dispatchSecurityNotification, testNotification, type NotificationType } from "./notifications.js";
 import { startScheduler, stopScheduler } from "./scheduler.js";
 import { appendAuditEvent, verifyAuditChain } from "./audit.js";
-import { auditPeriod, collectAuditReport, createPdfReport, createXlsxReport, reportSha256 } from "./reports.js";
+import { auditPeriod, collectAuditReport, createHealthPdf, createPdfReport, createXlsxReport, reportSha256 } from "./reports.js";
 import { createMfaSecret, createRecoveryCodes, mfaUri, recoveryCodeHash, verifyMfaCode } from "./mfa.js";
 import * as oidcClient from "openid-client";
 import { allowedEmail, authorizationUrl, chooseRole, consumeState, oidcConfiguration, type OidcProvider, type Role } from "./oidc.js";
 import {deliveryErrorCode,testDeliveryChannel,type DeliveryConfig} from "./report-delivery.js";
 import { syncThreatIntelligence, threatIntelligenceStatus } from "./threat-intelligence.js";
 import { evaluateLogAlerts, ingestLogs, logBatchSchema, logSummary, queryLogs } from "./log-events.js";
-import { healthStatus, updatePolicy } from "./health.js";
+import { healthHistory, healthRows, healthStatus, updatePolicy } from "./health.js";
+import { systemRegional } from "./localization.js";
 
 const app = Fastify({ logger: { level: config.isProduction ? "info" : "warn" }, bodyLimit: 64 * 1024 });
 await app.register(cookie);
@@ -268,6 +269,7 @@ app.get("/api/logs/summary",{preHandler:requireAuth},async(request,reply)=>{cons
 
 const healthPolicySchema=z.object({warningValue:z.number().nullable(),criticalValue:z.number().nullable(),durationSeconds:z.number().int().min(0).max(86400),enabled:z.boolean()});
 app.get("/api/health",{preHandler:requireAuth},async()=>healthStatus());
+app.get("/api/health/report",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user)return reply.code(401).send({error:"Authentication required"});const regional=systemRegional(),buffer=await createHealthPdf(healthStatus().items,{locale:regional.locale,timezone:regional.timezone,preparedBy:user.username});appendAuditEvent(user.id,"HEALTH_REPORT_EXPORTED","health_report",null,{format:"PDF",sha256:reportSha256(buffer)});return reply.header("Content-Disposition",`attachment; filename="byakugan-health-check-${new Date().toISOString().slice(0,10)}.pdf"`).type("application/pdf").send(buffer)});
 app.put("/api/health/policies/:no",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(user?.role!=="ADMIN")return reply.code(403).send({error:"Administrator role required"});const no=Number((request.params as {no:string}).no),body=parse(healthPolicySchema,request.body,reply);if(!body)return;if(!updatePolicy(no,body))return reply.code(404).send({error:"Health policy not found"});appendAuditEvent(user.id,"HEALTH_POLICY_UPDATED","health_policy",no,body);return{ok:true}});
 app.put("/api/notifications/:id/help-desk",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(user?.role!=="ADMIN")return reply.code(403).send({error:"Administrator role required"});const id=Number((request.params as {id:string}).id),body=parse(z.object({helpDesk:z.boolean()}),request.body,reply);if(!body)return;const result=db.prepare("UPDATE notifications SET help_desk=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(body.helpDesk?1:0,id);if(!result.changes)return reply.code(404).send({error:"Notification channel not found"});appendAuditEvent(user.id,"NOTIFICATION_HELP_DESK_UPDATED","notification",id,body);return{ok:true}});
 
@@ -853,7 +855,7 @@ app.get("/api/audit/export", { preHandler: requireAuth }, async (request, reply)
     FROM vulnerability_findings v JOIN agents a ON a.id=v.agent_id WHERE v.first_detected_at<=? AND (v.resolved_at IS NULL OR v.resolved_at>=?) ORDER BY v.severity,v.vulnerability_id`).all(to,from) as Array<Record<string,unknown>>;
   const logEvents=db.prepare(`SELECT l.id,a.name AS agent,l.source,l.event,l.host,l.actor,l.src_ip,l.result,l.severity,l.details_json,l.occurred_at
     FROM log_events l JOIN agents a ON a.id=l.agent_id WHERE l.occurred_at BETWEEN ? AND ? ORDER BY l.occurred_at LIMIT 500000`).all(from,to) as Array<Record<string,unknown>>;
-  const files: Record<string, string> = { "log-events.csv":csv(logEvents), "assets.csv": csv(assets), "heartbeats.csv": csv(heartbeats), "incidents.csv": csv(incidentsExport),
+  const files: Record<string, string> = { "health-check.csv":csv(healthRows()), "health-history.csv":csv(healthHistory(from,to)), "log-events.csv":csv(logEvents), "assets.csv": csv(assets), "heartbeats.csv": csv(heartbeats), "incidents.csv": csv(incidentsExport),
     "control-mapping.csv": csv(mappings), "audit-trail.csv": csv(events),"agent-assets.csv":csv(agentAssets),"host-metrics.csv":csv(hostMetrics),
     "compliance-findings.csv":csv(findingsExport),"database-metrics.csv":csv(databaseMetrics),"report-deliveries.csv":csv(reportDeliveryEvidence),"backup-evidence.csv":csv(backups),"restore-tests.csv":csv(restores),
     "vulnerability-scans.csv":csv(vulnerabilityScans),"vulnerabilities.csv":csv(vulnerabilities) };

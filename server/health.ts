@@ -50,6 +50,7 @@ db.prepare("UPDATE health_policies SET metric_key='backup_age_ratio',unit='x',wa
 db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=CURRENT_TIMESTAMP WHERE finding_key IN ('cpu','memory','disk') AND status='OPEN'").run();
 
 const STALE_MS = 15 * 60000;
+export const withUnit = (value: unknown, unit: string) => (value === null || value === undefined ? "—" :`${value}${unit === "%" || unit === "x" ? "" : " "}${unit}`);
 const POLICY_SQL = `SELECT no,name_th AS nameTh,name_en AS nameEn,check_th AS checkTh,frequency_th AS frequencyTh,metric_key AS metricKey,unit,direction,warning_value AS warningValue,critical_value AS criticalValue,warning_inclusive AS warningInclusive,duration_seconds AS durationSeconds,enabled FROM health_policies`;
 
 export function classify(value: number, p: Pick<Policy, "direction" | "warningValue" | "criticalValue" | "warningInclusive">): Level {
@@ -85,7 +86,7 @@ function cpuSubjects(p: Policy, now: Date): Subject[] {
 function diskCSubjects(): Subject[] {
   return hostAgents().flatMap((a) => {
     const disk = (JSON.parse(a.disks) as Array<{ mount: string; usedPercent: number }>).find((d) => /^c:?\\?$/i.test(d.mount) || d.mount === "/");
-    return disk ? [{ key: `agent:${a.id}`, agentId: a.id, label: `${a.name} ${disk.mount}`, value: Math.round((100 - disk.usedPercent) * 100) / 100, observedAt: a.observedAt }] : [];
+    return disk ? [{ key: `agent:${a.id}`, agentId: a.id, label: `${a.name} (${disk.mount})`, value: Math.round((100 - disk.usedPercent) * 100) / 100, observedAt: a.observedAt }] : [];
   });
 }
 
@@ -151,7 +152,7 @@ const pending: Array<() => Promise<void>> = [];
 function transition(p: Policy, s: ReturnType<typeof evaluateSubjects>[number], from: Level | null, now: string) {
   db.prepare("INSERT INTO health_history(policy_no,subject_key,label,from_level,to_level,value,at) VALUES(?,?,?,?,?,?,?)").run(p.no, s.key, s.label, from, s.level, s.value, now);
   appendAuditEvent(null, "HEALTH_LEVEL_CHANGED", "health_policy", p.no, { subject: s.label, from, to: s.level, value: s.value, unit: p.unit });
-  const source = `${p.nameEn} · ${s.label}`, text = `${p.no}. ${p.nameTh}\n${s.label}: ${s.value}${p.unit} → ${s.level}`;
+  const source = `${p.nameEn} · ${s.label}`, text = `${p.no}. ${p.nameTh}\n${s.label}: ${withUnit(s.value, p.unit)} → ${s.level}`;
   const findingKey = `health_${p.metricKey}`;
   if (s.level === "NORMAL") {
     if (s.agentId) db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=?,last_detected_at=? WHERE agent_id=? AND finding_key=? AND status='OPEN'").run(now, now, s.agentId, findingKey);
@@ -162,10 +163,10 @@ function transition(p: Policy, s: ReturnType<typeof evaluateSubjects>[number], f
   if (s.level !== "WARNING" && s.level !== "CRITICAL") return;
   if (s.agentId) db.prepare(`INSERT INTO compliance_findings(agent_id,finding_key,category,severity,status,title,explanation,first_detected_at,last_detected_at)
     VALUES(?,?,'HEALTH',?,'OPEN',?,?,?,?) ON CONFLICT(agent_id,finding_key) DO UPDATE SET severity=excluded.severity,status='OPEN',title=excluded.title,explanation=excluded.explanation,last_detected_at=excluded.last_detected_at,resolved_at=NULL`)
-    .run(s.agentId, findingKey, s.level === "CRITICAL" ? "CRITICAL" : "MEDIUM", p.nameEn, `${s.label}: ${s.value}${p.unit} (${s.level})`, now, now);
+    .run(s.agentId, findingKey, s.level === "CRITICAL" ? "CRITICAL" : "MEDIUM", p.nameEn, `${s.label}: ${withUnit(s.value, p.unit)} (${s.level})`, now, now);
   if (s.level === "CRITICAL") {
     const open = db.prepare("SELECT id FROM incidents WHERE health_policy_no=? AND source_label=? AND resolved_at IS NULL").get(p.no, source);
-    if (!open) db.prepare("INSERT INTO incidents(project_id,status,message,started_at,severity,health_policy_no,source_label) VALUES(NULL,'CRITICAL',?,?,'HIGH',?,?)").run(`${s.label}: ${s.value}${p.unit} exceeds the Critical threshold`, now, p.no, source);
+    if (!open) db.prepare("INSERT INTO incidents(project_id,status,message,started_at,severity,health_policy_no,source_label) VALUES(NULL,'CRITICAL',?,?,'HIGH',?,?)").run(`${s.label}: ${withUnit(s.value, p.unit)} exceeds the Critical threshold`, now, p.no, source);
     pending.push(() => dispatchHealthNotification("HEALTH_CRITICAL", `🔴 ${text}\nIncident Process required`));
   } else pending.push(() => dispatchHealthNotification("HEALTH_WARNING", `🟡 ${text}\nPlease check or open a Help desk ticket`));
 }
@@ -198,12 +199,36 @@ export async function runHealthChecks() {
   catch (error) { console.error("Health check failed:", error instanceof Error ? error.message : error); }
 }
 
+// Same wording as the standard's Normal / Warning / Critical columns, derived from the editable thresholds.
+export function thresholdText(p: Pick<Policy, "direction" | "warningValue" | "criticalValue" | "warningInclusive" | "unit" | "durationSeconds">) {
+  const u = p.unit === "%" || p.unit === "x" ? p.unit : ` ${p.unit}`, w = p.warningValue, c = p.criticalValue;
+  const f = (v: number | null) => (v === null ? "—" : `${v}${u}`);
+  const dur = p.durationSeconds ? ` (${Math.round(p.durationSeconds / 60)} min)` : "";
+  return p.direction === "HIGH"
+    ? { normal: `${p.warningInclusive ? "<" : "≤"} ${f(w)}`, warning: `${f(w)} – ${f(c)}`, critical: `> ${f(c)}${dur}` }
+    : { normal: `${p.warningInclusive ? ">" : "≥"} ${f(w)}`, warning: `${f(c)} – ${f(w)}`, critical: `< ${f(c)}` };
+}
+
+// Flat rows for CSV / XLSX / PDF sections of the audit report.
+export function healthRows() {
+  return healthStatus().items.map((i) => ({
+    no: i.no, itemEn: i.nameEn, itemTh: i.nameTh, level: i.level,
+    measured: i.subjects.length ? i.subjects.map((s) => `${s.label}: ${withUnit(s.value, i.unit)}`).join("; ") : "—",
+    normal: i.thresholds.normal, warning: i.thresholds.warning, critical: i.thresholds.critical, frequency: i.frequencyTh
+  }));
+}
+
+export function healthHistory(from: string, to: string) {
+  return db.prepare(`SELECT h.at,h.policy_no AS no,p.name_en AS item,h.label AS subject,h.from_level AS fromLevel,h.to_level AS toLevel,h.value,p.unit
+    FROM health_history h JOIN health_policies p ON p.no=h.policy_no WHERE h.at BETWEEN ? AND ? ORDER BY h.at`).all(from, to) as Array<Record<string, unknown>>;
+}
+
 export function healthStatus() {
   const policies = db.prepare(`${POLICY_SQL} ORDER BY no`).all() as Policy[];
   const states = db.prepare("SELECT policy_no AS policyNo,subject_key AS subjectKey,label,level,value,note,since,evaluated_at AS evaluatedAt FROM health_state").all() as Array<{ policyNo: number; level: Level; [k: string]: unknown }>;
   const items = policies.map((p) => {
     const subjects = states.filter((s) => s.policyNo === p.no);
-    return { ...p, enabled: Boolean(p.enabled), warningInclusive: Boolean(p.warningInclusive), level: p.enabled ? worst(subjects.map((s) => s.level)) : "NO_DATA" as Level, subjects };
+    return { ...p, thresholds: thresholdText(p), enabled: Boolean(p.enabled), warningInclusive: Boolean(p.warningInclusive), level: p.enabled ? worst(subjects.map((s) => s.level)) : "NO_DATA" as Level, subjects };
   });
   return { items, summary: { normal: items.filter((i) => i.level === "NORMAL").length, warning: items.filter((i) => i.level === "WARNING").length, critical: items.filter((i) => i.level === "CRITICAL").length, noData: items.filter((i) => i.level === "NO_DATA").length } };
 }

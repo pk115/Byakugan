@@ -17,7 +17,12 @@ type Project = {
   recentHeartbeats?: Array<{ status: string; responseTimeMs: number; checkedAt: string }>;
 };
 type PublicStatus = { title: string; operational: boolean; updatedAt: string; monitors: Array<Project & { uptime24h: number | null }> };
-type Notification = { id: number; name: string; type: "WEBHOOK" | "DISCORD" | "TELEGRAM"; enabled: boolean; configured: boolean };
+type Notification = { id: number; name: string; type: "WEBHOOK" | "DISCORD" | "TELEGRAM"; enabled: boolean; helpDesk?: boolean; configured: boolean };
+type HealthLevel = "NORMAL" | "WARNING" | "CRITICAL" | "NO_DATA";
+type HealthItem = { no: number; nameTh: string; nameEn: string; checkTh: string; frequencyTh: string; unit: string; level: HealthLevel; enabled: boolean;
+  warningValue: number | null; criticalValue: number | null; durationSeconds: number; thresholds: { normal: string; warning: string; critical: string };
+  subjects: Array<{ subjectKey: string; label: string; level: HealthLevel; value: number | null; since: string }> };
+type HealthStatus = { items: HealthItem[]; summary: { normal: number; warning: number; critical: number; noData: number } };
 type Incident = { id:number;projectId:number;projectName:string;status:string;message:string|null;severity:string;owner:string|null;rootCause:string|null;correctiveAction:string|null;lessonsLearned:string|null;reviewStatus:string;reviewedAt:string|null;reviewedBy:string|null;startedAt:string;resolvedAt:string|null };
 type Delivery = { id: number; notificationName: string; projectName: string | null; event: string; success: boolean; errorMessage: string | null; createdAt: string };
 type Heartbeat = {
@@ -90,7 +95,7 @@ const showUserForm=ref(false);
 const showReportScheduleForm=ref(false);
 const showReportDeliveryForm=ref(false);
 const showBackupConnectorForm=ref(false);const showIncidentForm=ref(false);
-const activeView = ref<"dashboard" | "actions" | "incidents" | "agents" | "vulnerabilities" | "heartbeats" | "notifications" | "shares" | "audit" | "users" | "settings" | "detail">("dashboard");
+const activeView = ref<"health" | "dashboard" | "actions" | "incidents" | "agents" | "vulnerabilities" | "heartbeats" | "notifications" | "shares" | "audit" | "users" | "settings" | "detail">("dashboard");
 const editingId = ref<number | null>(null);
 const selected = ref<Project | null>(null);
 const heartbeats = ref<Heartbeat[]>([]);
@@ -193,7 +198,7 @@ async function loadSession() {
   loginProviders.value=await api<OidcProvider[]>("/api/auth/oidc/providers");
   if(session.value.user?.locale)setLocale(session.value.user.locale);
   if(session.value.user?.mfaRequired&&!session.value.user.mfaEnabled){await startMfaSetup();return}
-  if (session.value.authenticated) await Promise.all([loadProjects(), loadNotifications(), loadIncidents(), loadDeliveries(), loadStatusSettings(), loadRegional(), loadMfaPolicy(), loadShareDashboards(), loadAudit(),loadInfrastructure(),loadVulnerabilities(),loadUsers(),loadOidcProviders()]);
+  if (session.value.authenticated) await Promise.all([loadProjects(), loadNotifications(), loadIncidents(), loadDeliveries(), loadStatusSettings(), loadRegional(), loadMfaPolicy(), loadShareDashboards(), loadAudit(),loadInfrastructure(),loadVulnerabilities(),loadUsers(),loadOidcProviders(),loadHealth()]);
 }
 
 async function authenticate(setup: boolean) {
@@ -232,6 +237,17 @@ async function loadDeliveries() { deliveries.value = await api<Delivery[]>("/api
 async function loadShareDashboards() { shareDashboards.value = await api<ShareDashboard[]>("/api/share-dashboards"); }
 function auditQuery(){return `from=${encodeURIComponent(new Date(`${auditRange.from}T00:00:00.000Z`).toISOString())}&to=${encodeURIComponent(new Date(`${auditRange.to}T23:59:59.999Z`).toISOString())}`}
 async function loadAudit() { const [overview,controls,settings,workspace,backupRows,restoreRows,schedules,reports,connectors,channels,deliveryRows]=await Promise.all([api<AuditOverview>("/api/audit/overview"),api<IsoControl[]>("/api/audit/controls"),api<{retentionDays:number}>("/api/audit/settings"),api<AuditWorkspace>(`/api/audit/workspace?${auditQuery()}`),api<BackupEvidence[]>("/api/backup-evidence"),api<RestoreTest[]>("/api/restore-tests"),api<ReportSchedule[]>("/api/report-schedules"),api<GeneratedReport[]>("/api/generated-reports"),api<BackupConnector[]>("/api/backup-connectors"),api<ReportDeliveryChannel[]>("/api/report-delivery-channels"),api<ReportDelivery[]>("/api/report-deliveries")]);auditOverview.value=overview;isoControls.value=controls;auditRetentionDays.value=settings.retentionDays;auditWorkspace.value=workspace;backups.value=backupRows;restoreTests.value=restoreRows;reportSchedules.value=schedules;generatedReports.value=reports;backupConnectors.value=connectors;reportDeliveryChannels.value=channels;reportDeliveries.value=deliveryRows; }
+const health = ref<HealthStatus | null>(null);
+const healthEditing = ref<number | null>(null);
+const thai = computed(() => locale.value === "th-TH");
+const unitText = (value: number | null, unit: string) => (value === null ? "—" : `${value}${unit === "%" || unit === "x" ? "" : " "}${unit}`);
+async function loadHealth() { health.value = await api<HealthStatus>("/api/health"); }
+async function saveHealthPolicy(item: HealthItem) {
+  busy.value = true; error.value = "";
+  try { await api(`/api/health/policies/${item.no}`, { method: "PUT", body: JSON.stringify({ warningValue: item.warningValue, criticalValue: item.criticalValue, durationSeconds: item.durationSeconds, enabled: item.enabled }) }); healthEditing.value = null; await loadHealth(); }
+  catch (value) { error.value = value instanceof Error ? value.message : "Unable to save policy"; } finally { busy.value = false; }
+}
+async function toggleHelpDesk(item: Notification) { await api(`/api/notifications/${item.id}/help-desk`, { method: "PUT", body: JSON.stringify({ helpDesk: !item.helpDesk }) }); await loadNotifications(); }
 async function loadInfrastructure(){[agents.value,findings.value]=await Promise.all([api<AgentHost[]>("/api/agents"),api<Finding[]>("/api/action-required")]);}
 async function loadVulnerabilities(){[vulnerabilities.value,vulnerabilityScans.value,vulnerabilityScanJobs.value,scanProfiles.value,scanSchedules.value,threatIntelStatus.value]=await Promise.all([api<Vulnerability[]>("/api/vulnerabilities"),api<VulnerabilityScan[]>("/api/vulnerability-scans"),api<VulnerabilityScanJob[]>("/api/vulnerability-scan-jobs"),api<ScanProfile[]>("/api/vulnerability-scan-profiles"),api<ScanSchedule[]>("/api/vulnerability-scan-schedules"),api<ThreatIntelStatus|null>("/api/threat-intelligence/status")]);}
 async function syncThreatIntel(){busy.value=true;error.value="";try{await api("/api/threat-intelligence/sync",{method:"POST"});await loadVulnerabilities()}catch(value){error.value=value instanceof Error?value.message:"Unable to synchronize threat intelligence"}finally{busy.value=false}}
@@ -501,7 +517,7 @@ onMounted(async () => {
   if (isSharePage) { sharedPage.value = await api<SharedPage>(`/api/share/${shareToken}`); return; }
   if (isPublicPage) { publicStatus.value = await api<PublicStatus>("/api/public/status"); return; }
   await loadSession();
-  pollTimer = window.setInterval(() => { if (session.value?.authenticated) { void loadProjects(); if(activeView.value==="vulnerabilities")void loadVulnerabilities(); } }, 15_000);
+  pollTimer = window.setInterval(() => { if (session.value?.authenticated) { void loadProjects(); if(activeView.value==="vulnerabilities")void loadVulnerabilities(); if(activeView.value==="health"&&healthEditing.value===null)void loadHealth(); } }, 15_000);
 });
 
 async function loadStatusSettings() {
@@ -583,6 +599,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
         <button :class="{ active: activeView === 'dashboard' }" @click="activeView = 'dashboard'"><span>⌁</span> {{ t('nav.dashboard') }}</button>
         <button :class="{ active: activeView === 'actions' }" @click="activeView = 'actions'"><span>!</span> {{ t('nav.actions') }} <b v-if="findings.length" class="nav-badge">{{ findings.length }}</b></button>
         <span class="nav-section">{{ t('nav.monitoring') }}</span>
+        <button :class="{ active: activeView === 'health' }" @click="activeView = 'health'; loadHealth()"><span>♥</span> Health Check <b v-if="health && (health.summary.critical || health.summary.warning)" :class="['nav-badge', health.summary.critical ? 'lvl-critical-badge' : '']">{{ health.summary.critical + health.summary.warning }}</b></button>
         <button :class="{ active: activeView === 'heartbeats' }" @click="activeView = 'heartbeats'"><span>◷</span> {{ t('nav.monitors') }}</button>
         <button :class="{ active: activeView === 'agents' }" @click="activeView = 'agents'"><span>▣</span> {{ t('nav.agents') }}</button>
         <button :class="{ active: activeView === 'incidents' }" @click="activeView = 'incidents'"><span>△</span> {{ t('nav.incidents') }} <b v-if="incidents.filter(x=>!x.resolvedAt||x.reviewStatus!=='APPROVED').length" class="nav-badge">{{ incidents.filter(x=>!x.resolvedAt||x.reviewStatus!=='APPROVED').length }}</b></button>
@@ -649,6 +666,20 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
       <template v-else-if="activeView === 'incidents'">
         <header><div><h1>{{ t('page.incidents') }}</h1><p>{{ t('page.incidentsSub') }}</p></div></header><section class="usage-guide"><article><b>1 · Monitor transition</b><span>Incident จะถูกสร้างเมื่อมอนิเตอร์เปลี่ยนจาก UP/PENDING เป็น DOWN หรือ PAUSED</span></article><article><b>2 · Automatic recovery</b><span>เมื่อมอนิเตอร์กลับมา UP ระบบจะบันทึกเวลาสิ้นสุดเหตุการณ์ให้อัตโนมัติ</span></article><article><b>3 · ISO review</b><span>ผู้ดูแลบันทึกสาเหตุราก การแก้ไข และบทเรียน แล้วอนุมัติเป็นหลักฐานออดิต</span></article></section><section class="incident-scope-note"><strong>ขอบเขต:</strong> หน้านี้แสดงเหตุบริการล่มจากเมนูมอนิเตอร์ ไม่รวม Health finding หรือ Vulnerability scan failure ซึ่งอยู่ใน “รายการที่ต้องดำเนินการ” และ “ช่องโหว่”</section><div class="metrics"><article><span>Total incidents</span><strong>{{ incidents.length }}</strong></article><article><span>Open service impact</span><strong class="red">{{ incidents.filter(x=>!x.resolvedAt).length }}</strong></article><article><span>Pending review</span><strong>{{ incidents.filter(x=>x.reviewStatus!=='APPROVED').length }}</strong></article><article><span>Approved</span><strong class="green">{{ incidents.filter(x=>x.reviewStatus==='APPROVED').length }}</strong></article></div>
         <section class="panel page-panel"><div v-if="!incidents.length" class="empty"><div class="empty-icon">✓</div><h2>ยังไม่มีเหตุการณ์บริการล่ม</h2><p>ข้อมูลจะปรากฏอัตโนมัติเมื่อมอนิเตอร์ที่เคยทำงานปกติเปลี่ยนเป็น DOWN หรือ PAUSED</p></div><div v-else class="incident-list"><button v-for="item in incidents" :key="item.id" class="incident-row" :disabled="!canWrite" @click="editIncident(item)"><span :class="['severity-mark',item.severity.toLowerCase()]"></span><span><strong>{{ item.projectName }}</strong><small>{{ item.message }}</small></span><span><small>Service</small>{{ item.resolvedAt?'RECOVERED':item.status }}</span><span><small>Owner</small>{{ item.owner||'Unassigned' }}</span><span><small>Review</small>{{ item.reviewStatus }}</span><time>{{ new Date(item.startedAt).toLocaleString() }}</time></button></div></section>
+      </template>
+
+      <template v-else-if="activeView === 'health'">
+        <header><div><h1>{{ thai ? 'ตารางมาตรฐาน Health Check' : 'Health Check standard' }}</h1><p>{{ thai ? 'ประเมินอัตโนมัติ: Warning แจ้ง Help desk, Critical เปิด Incident Process' : 'Evaluated automatically: Warning notifies the Help desk, Critical opens an incident.' }}</p></div><a class="primary button-link" href="/api/health/report" download>⇩ PDF</a></header>
+        <p v-if="error" class="error-banner dismissible">{{ error }} <button @click="error = ''">×</button></p>
+        <div v-if="health" class="metrics"><article><span>Normal</span><strong class="green">{{ health.summary.normal }}</strong></article><article><span>Warning</span><strong class="amber">{{ health.summary.warning }}</strong></article><article><span>Critical</span><strong class="red">{{ health.summary.critical }}</strong></article><article><span>{{ thai ? 'ยังไม่มีข้อมูล' : 'No data' }}</span><strong>{{ health.summary.noData }}</strong></article></div>
+        <section class="panel page-panel health-panel"><div v-if="!health" class="empty"><h2>…</h2></div><div v-else class="health-table">
+          <div class="health-head"><span>#</span><span>{{ thai ? 'รายการ' : 'Item' }}</span><span>{{ thai ? 'ดำเนินการตรวจเช็ค' : 'Check' }}</span><span class="h-normal">Normal</span><span class="h-warning">Warning</span><span class="h-critical">Critical</span><span>{{ thai ? 'ความถี่' : 'Frequency' }}</span><span>{{ thai ? 'ผลล่าสุด' : 'Latest' }}</span></div>
+          <template v-for="item in health.items" :key="item.no">
+            <div :class="['health-row', { disabled: !item.enabled }]"><span>{{ item.no }}</span><span><strong>{{ thai ? item.nameTh : item.nameEn }}</strong></span><span class="muted-cell">{{ item.checkTh }}</span><span class="h-normal">{{ item.thresholds.normal }}</span><span class="h-warning">{{ item.thresholds.warning }}</span><span class="h-critical">{{ item.thresholds.critical }}</span><span>{{ item.frequencyTh }}</span>
+              <span class="health-result"><b :class="['lvl', 'lvl-' + item.level.toLowerCase()]">{{ item.enabled ? item.level.replace('_', ' ') : 'OFF' }}</b><small v-for="s in item.subjects.slice(0, 3)" :key="s.subjectKey">{{ s.label }}: {{ s.value ?? '—' }}{{ item.unit }}</small><button v-if="isAdmin" class="icon-button" :title="thai ? 'แก้เกณฑ์' : 'Edit thresholds'" @click="healthEditing = healthEditing === item.no ? null : item.no">✎</button></span></div>
+            <div v-if="healthEditing === item.no" class="health-edit"><label>Warning<input v-model.number="item.warningValue" type="number" step="any"></label><label>Critical<input v-model.number="item.criticalValue" type="number" step="any"></label><label>{{ thai ? 'ต่อเนื่อง (วินาที)' : 'Duration (s)' }}<input v-model.number="item.durationSeconds" type="number" min="0" max="86400"></label><label class="check"><input v-model="item.enabled" type="checkbox"> {{ thai ? 'เปิดใช้งาน' : 'Enabled' }}</label><button class="primary" :disabled="busy" @click="saveHealthPolicy(item)">{{ thai ? 'บันทึก' : 'Save' }}</button><button class="secondary" @click="healthEditing = null; loadHealth()">{{ thai ? 'ยกเลิก' : 'Cancel' }}</button></div>
+          </template>
+        </div></section>
       </template>
 
       <template v-else-if="activeView === 'agents'">
@@ -728,6 +759,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
               <span class="notification-icon">{{ item.type === 'TELEGRAM' ? '✈' : item.type === 'DISCORD' ? '◈' : '↗' }}</span>
               <span><strong>{{ item.name }}</strong><small>{{ item.type }} · credentials stored encrypted</small></span>
               <span :class="['status-pill', item.enabled ? 'up' : 'disabled']">{{ item.enabled ? 'ENABLED' : 'DISABLED' }}</span>
+              <button v-if="isAdmin" :class="['secondary', 'help-desk-toggle', { on: item.helpDesk }]" :title="thai ? 'ช่องทางที่รับ Warning จาก Health Check' : 'Receives Health Check warnings'" @click="toggleHelpDesk(item)">{{ item.helpDesk ? '✔ Help desk' : 'Help desk' }}</button>
               <button class="icon-button" title="Delete" @click="removeNotification(item)">⌫</button>
             </article>
           </div>

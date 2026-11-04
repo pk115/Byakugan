@@ -97,6 +97,16 @@ describe("health engine", () => {
     expect((db.prepare("SELECT COUNT(*) AS n FROM backup_evidence WHERE asset_name='cms'").get() as { n: number }).n).toBe(3);
   });
 
+  it("renders thresholds in the wording of the standard and exports flat rows", () => {
+    const rows = health.healthRows();
+    expect(rows).toHaveLength(10);
+    expect(rows[0]).toMatchObject({ normal: "< 70%", warning: "70% – 85%", critical: "> 85% (5 min)" });
+    expect(rows[2]).toMatchObject({ normal: "> 25%", warning: "10% – 25%", critical: "< 10%" });
+    expect(rows[8]).toMatchObject({ normal: "≥ 99.9%", warning: "99% – 99.9%", critical: "< 99%" });
+    expect(health.withUnit(22, "days")).toBe("22 days");
+    expect(health.withUnit(94, "%")).toBe("94%");
+  });
+
   it("reports all ten items and leaves unmeasured ones as NO_DATA", () => {
     const status = health.healthStatus();
     expect(status.items).toHaveLength(10);
