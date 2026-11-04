@@ -10,6 +10,7 @@ import { decrypt } from "./crypto.js";
 import { dispatchNotifications } from "./notifications.js";
 import { appendAuditEvent } from "./audit.js";
 import { probeDatabase, type DatabaseMetrics } from "./database-monitor.js";
+import { wsStatus } from "./ws-watcher.js";
 
 export type MonitorStatus =
   | "UP"
@@ -27,6 +28,7 @@ type CheckResult = {
   attempt: number;
   databaseMetrics?: DatabaseMetrics;
   metricValue?: number;
+  lossPercent?: number;
 };
 const execFileAsync = promisify(execFile);
 
@@ -46,6 +48,7 @@ async function attemptCheck(project: ProjectRow, attempt: number): Promise<Check
   if (project.monitor_type === "SSL") return attemptSslCheck(project, attempt);
   if (project.monitor_type === "DOCKER") return attemptDockerCheck(project, attempt);
   if (project.monitor_type === "DATABASE") return attemptDatabaseCheck(project,attempt);
+  if (project.monitor_type === "WEBSOCKET") return attemptWebsocketCheck(project, attempt);
   const started = performance.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), project.timeout_seconds * 1000);
@@ -98,19 +101,36 @@ async function attemptCheck(project: ProjectRow, attempt: number): Promise<Check
 
 async function attemptDatabaseCheck(project:ProjectRow,attempt:number):Promise<CheckResult>{const started=performance.now();try{if(!project.database_engine)throw new Error("Database engine is missing");const result=await probeDatabase(project.database_engine,decrypt(project.encrypted_key),project.timeout_seconds);return{status:"UP",httpStatus:null,responseTimeMs:result.responseTimeMs,message:result.message,attempt,databaseMetrics:result.metrics}}catch(error){const code=typeof error==="object"&&error&&"code" in error?String((error as {code:unknown}).code):"QUERY_FAILED";return{status:"DOWN",httpStatus:null,responseTimeMs:Math.round(performance.now()-started),message:`Database connection or monitoring query failed (${code.replace(/[^A-Z0-9_-]/gi,"").slice(0,40)})`,attempt}}}
 
+// The persistent connection is held by ws-watcher.ts; a check just reports its current state.
+function attemptWebsocketCheck(project: ProjectRow, attempt: number): CheckResult {
+  const s = wsStatus(project.id);
+  if (!s) return { status: "DOWN", httpStatus: null, responseTimeMs: 0, message: "WebSocket watcher is starting", attempt };
+  return s.connected
+    ? { status: "UP", httpStatus: null, responseTimeMs: s.connectMs ?? 0, message: `WebSocket connected for ${Math.round(s.connectedForSeconds)} s`, attempt }
+    : { status: "DOWN", httpStatus: null, responseTimeMs: 0, message: `WebSocket disconnected for ${Math.round(s.downForSeconds)} s`, attempt };
+}
+
+// Works on Linux ("0% packet loss", "time=12.3 ms") and English Windows ("(0% loss)", "time=12ms", "time<1ms").
+export function parsePing(output: string) {
+  const loss = /(\d+(?:\.\d+)?)%\s*(?:packet\s*)?loss/i.exec(output);
+  const times = [...output.matchAll(/time[=<]\s*([\d.]+)\s*ms/gi)].map((m) => Number(m[1]));
+  return { lossPercent: loss ? Number(loss[1]) : null, avgMs: times.length ? Math.round((times.reduce((a, b) => a + b, 0) / times.length) * 10) / 10 : null };
+}
+
+const PING_COUNT = 4;
 async function attemptPingCheck(project: ProjectRow, attempt: number): Promise<CheckResult> {
   const started = performance.now();
-  try {
-    if (!project.target) throw new Error("Ping hostname is missing");
-    const isWindows = process.platform === "win32";
-    const args = isWindows
-      ? ["-n", "1", "-w", String(project.timeout_seconds * 1000), project.target]
-      : ["-c", "1", "-W", String(project.timeout_seconds), project.target];
-    await execFileAsync("ping", args, { timeout: (project.timeout_seconds + 1) * 1000 });
-    return { status: "UP", httpStatus: null, responseTimeMs: Math.round(performance.now() - started), message: "Host replied to ICMP ping", attempt };
-  } catch (error) {
-    return { status: "DOWN", httpStatus: null, responseTimeMs: Math.round(performance.now() - started), message: error instanceof Error ? error.message : "Ping failed", attempt };
-  }
+  const down = (message: string, lossPercent?: number): CheckResult => ({ status: "DOWN", httpStatus: null, responseTimeMs: Math.round(performance.now() - started), message, attempt, lossPercent });
+  if (!project.target) return down("Ping hostname is missing");
+  const args = process.platform === "win32"
+    ? ["-n", String(PING_COUNT), "-w", String(project.timeout_seconds * 1000), project.target]
+    : ["-c", String(PING_COUNT), "-W", String(project.timeout_seconds), project.target];
+  let output: string;
+  try { output = (await execFileAsync("ping", args, { timeout: (project.timeout_seconds * PING_COUNT + 5) * 1000 })).stdout; }
+  catch (error) { output = String((error as { stdout?: string }).stdout ?? ""); if (!output) return down(error instanceof Error ? error.message : "Ping failed"); } // ping exits non-zero when packets are lost
+  const { lossPercent, avgMs } = parsePing(output);
+  if (avgMs === null || lossPercent === 100) return down("No ICMP replies", 100);
+  return { status: "UP", httpStatus: null, responseTimeMs: Math.round(avgMs), message: `${PING_COUNT} packets, avg ${avgMs} ms, ${lossPercent ?? 0}% loss`, attempt, metricValue: avgMs, lossPercent: lossPercent ?? 0 };
 }
 
 async function attemptDnsCheck(project: ProjectRow, attempt: number): Promise<CheckResult> {
@@ -245,10 +265,10 @@ export async function checkProject(projectId: number): Promise<CheckResult> {
     const previousStatus = project.last_status;
     const transaction = db.transaction(() => {
       db.prepare(`INSERT INTO heartbeats
-        (project_id, status, http_status, response_time_ms, attempt, error_message, checked_at, metric_value)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        (project_id, status, http_status, response_time_ms, attempt, error_message, checked_at, metric_value, loss_percent)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(project.id, result.status, result.httpStatus, result.responseTimeMs, result.attempt,
-          result.status === "UP" ? null : result.message, now.toISOString(), result.metricValue ?? null);
+          result.status === "UP" ? null : result.message, now.toISOString(), result.metricValue ?? null, result.lossPercent ?? null);
       db.prepare(`UPDATE projects SET last_status = ?, last_message = ?, last_checked_at = ?,
         next_check_at = ?, consecutive_failures = ?, updated_at = ? WHERE id = ?`)
         .run(result.status, result.message, now.toISOString(), next.toISOString(), result.status === "UP" ? 0 : project.consecutive_failures + 1, now.toISOString(), project.id);

@@ -24,7 +24,7 @@ import { allowedEmail, authorizationUrl, chooseRole, consumeState, oidcConfigura
 import {deliveryErrorCode,testDeliveryChannel,type DeliveryConfig} from "./report-delivery.js";
 import { syncThreatIntelligence, threatIntelligenceStatus } from "./threat-intelligence.js";
 import { evaluateLogAlerts, ingestLogs, logBatchSchema, logSummary, queryLogs } from "./log-events.js";
-import { healthHistory, healthRows, healthStatus, updatePolicy } from "./health.js";
+import { healthHistory, healthRows, healthStatus, setExpectedLogSources, updatePolicy } from "./health.js";
 import { systemRegional } from "./localization.js";
 
 const app = Fastify({ logger: { level: config.isProduction ? "info" : "warn" }, bodyLimit: 64 * 1024 });
@@ -38,7 +38,7 @@ const credentialsSchema = z.object({
 
 const projectObject = z.object({
   name: z.string().trim().min(1).max(100),
-  monitorType: z.enum(["SUPABASE", "HTTP", "TCP", "PING", "DNS", "SSL", "DOCKER", "DATABASE"]).default("SUPABASE"),
+  monitorType: z.enum(["SUPABASE", "HTTP", "TCP", "PING", "DNS", "SSL", "DOCKER", "DATABASE", "WEBSOCKET"]).default("SUPABASE"),
   supabaseUrl: z.string().url().transform((value) => value.replace(/\/$/, "")).optional(),
   publishableKey: z.string().max(4096).optional(),
   target: z.string().trim().max(2048).optional(),
@@ -73,6 +73,10 @@ function validateProjectUrl(value: { supabaseUrl?: string }, context: z.Refineme
   if (typed.monitorType === "HTTP" && typed.target) {
     try { const url = new URL(typed.target); if (!["http:", "https:"].includes(url.protocol)) throw new Error(); }
     catch { context.addIssue({ code: "custom", path: ["target"], message: "A valid HTTP or HTTPS URL is required" }); }
+  }
+  if (typed.monitorType === "WEBSOCKET") {
+    try { if (!["ws:", "wss:"].includes(new URL(typed.target ?? "").protocol)) throw new Error(); }
+    catch { context.addIssue({ code: "custom", path: ["target"], message: "A valid ws:// or wss:// URL is required" }); }
   }
   if (typed.monitorType === "TCP" && (!typed.tcpHost || !typed.tcpPort)) {
     context.addIssue({ code: "custom", path: ["tcpHost"], message: "TCP host and port are required" });
@@ -271,6 +275,7 @@ const healthPolicySchema=z.object({warningValue:z.number().nullable(),criticalVa
 app.get("/api/health",{preHandler:requireAuth},async()=>healthStatus());
 app.get("/api/health/report",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user)return reply.code(401).send({error:"Authentication required"});const regional=systemRegional(),buffer=await createHealthPdf(healthStatus().items,{locale:regional.locale,timezone:regional.timezone,preparedBy:user.username});appendAuditEvent(user.id,"HEALTH_REPORT_EXPORTED","health_report",null,{format:"PDF",sha256:reportSha256(buffer)});return reply.header("Content-Disposition",`attachment; filename="byakugan-health-check-${new Date().toISOString().slice(0,10)}.pdf"`).type("application/pdf").send(buffer)});
 app.put("/api/health/policies/:no",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(user?.role!=="ADMIN")return reply.code(403).send({error:"Administrator role required"});const no=Number((request.params as {no:string}).no),body=parse(healthPolicySchema,request.body,reply);if(!body)return;if(!updatePolicy(no,body))return reply.code(404).send({error:"Health policy not found"});appendAuditEvent(user.id,"HEALTH_POLICY_UPDATED","health_policy",no,body);return{ok:true}});
+app.put("/api/health/log-sources",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(user?.role!=="ADMIN")return reply.code(403).send({error:"Administrator role required"});const body=parse(z.object({sources:z.array(z.string().regex(/^[a-z0-9_.-]{1,40}$/)).max(50)}),request.body,reply);if(!body)return;setExpectedLogSources(body.sources);appendAuditEvent(user.id,"HEALTH_LOG_SOURCES_UPDATED","settings","expected_log_sources",body);return{ok:true}});
 app.put("/api/notifications/:id/help-desk",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(user?.role!=="ADMIN")return reply.code(403).send({error:"Administrator role required"});const id=Number((request.params as {id:string}).id),body=parse(z.object({helpDesk:z.boolean()}),request.body,reply);if(!body)return;const result=db.prepare("UPDATE notifications SET help_desk=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(body.helpDesk?1:0,id);if(!result.changes)return reply.code(404).send({error:"Notification channel not found"});appendAuditEvent(user.id,"NOTIFICATION_HELP_DESK_UPDATED","notification",id,body);return{ok:true}});
 
 app.get("/api/agent/scan-jobs/next",{config:{rateLimit:{max:120,timeWindow:"1 minute"}}},async(request,reply)=>{

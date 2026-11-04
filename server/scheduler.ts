@@ -11,6 +11,7 @@ import {deliverReport,deliveryErrorCode,type DeliveryConfig} from "./report-deli
 import { scheduleThreatIntelligence } from "./threat-intelligence.js";
 import { purgeExpiredLogs } from "./log-events.js";
 import { runHealthChecks } from "./health.js";
+import { stopWatchers, syncWatchers } from "./ws-watcher.js";
 
 let timer: NodeJS.Timeout | undefined;
 let reportsRunning=false;
@@ -44,6 +45,7 @@ async function scheduledReports(){
 }
 
 async function tick() {
+  syncWatchers();
   const due = db.prepare(`SELECT * FROM projects
     WHERE enabled = 1 AND maintenance = 0 AND (next_check_at IS NULL OR next_check_at <= ?)`)
     .all(new Date().toISOString()) as ProjectRow[];
@@ -68,6 +70,7 @@ export function startScheduler() {
 }
 
 export function stopScheduler() {
+  stopWatchers();
   if (timer) clearInterval(timer);
   timer = undefined;
 }

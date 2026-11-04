@@ -1,6 +1,7 @@
 import { db } from "./database.js";
 import { appendAuditEvent } from "./audit.js";
 import { dispatchHealthNotification } from "./notifications.js";
+import { wsDropoutSeconds } from "./ws-watcher.js";
 
 export type Level = "NORMAL" | "WARNING" | "CRITICAL" | "NO_DATA";
 export type Policy = {
@@ -123,7 +124,60 @@ function backupSubjects(_p: Policy, now: Date): Subject[] {
   });
 }
 
+// Item 5: average latency of the last 4-packet ping; any loss lifts a NORMAL latency to WARNING, >=50% loss or no reply is CRITICAL.
+function pingSubjects(p: Policy): Subject[] {
+  const rows = db.prepare(`SELECT p.id,p.name,p.interval_seconds AS interval,h.status,h.metric_value AS ms,h.loss_percent AS loss,h.checked_at AS at FROM projects p
+    JOIN heartbeats h ON h.id=(SELECT id FROM heartbeats WHERE project_id=p.id ORDER BY checked_at DESC LIMIT 1)
+    WHERE p.monitor_type='PING' AND p.enabled=1 AND p.maintenance=0`).all() as Array<{ id: number; name: string; interval: number; status: string; ms: number | null; loss: number | null; at: string }>;
+  return rows.map((r) => {
+    const loss = r.loss ?? 0;
+    const forceLevel: Level | undefined = r.status === "DOWN" || loss >= 50 ? "CRITICAL" : loss > 0 && r.ms !== null && classify(r.ms, p) === "NORMAL" ? "WARNING" : undefined;
+    return { key: `project:${r.id}`, label: loss > 0 ? `${r.name} (loss ${loss}%)` : r.name, value: r.ms, observedAt: r.at, staleMs: Math.max(STALE_MS, r.interval * 2000), forceLevel };
+  });
+}
+
+// Item 6: connection usage of MongoDB monitors; replication lag above 5 s is CRITICAL regardless of connections.
+function mongoSubjects(): Subject[] {
+  const rows = db.prepare(`SELECT p.id,p.name,p.interval_seconds AS interval,m.connections_used AS used,m.connections_max AS max,m.replication_lag_seconds AS lag,m.observed_at AS at FROM projects p
+    JOIN database_metrics m ON m.id=(SELECT id FROM database_metrics WHERE project_id=p.id ORDER BY observed_at DESC LIMIT 1)
+    WHERE p.monitor_type='DATABASE' AND p.database_engine='MONGODB' AND p.enabled=1 AND p.maintenance=0`).all() as Array<{ id: number; name: string; interval: number; used: number | null; max: number | null; lag: number | null; at: string }>;
+  return rows.map((r) => ({
+    key: `project:${r.id}`, label: r.lag === null ? r.name : `${r.name} (lag ${r.lag}s)`, observedAt: r.at, staleMs: Math.max(STALE_MS, r.interval * 2000),
+    value: r.used !== null && r.max ? Math.round((r.used / r.max) * 10000) / 100 : null,
+    forceLevel: r.lag !== null && r.lag > 5 ? "CRITICAL" as Level : undefined
+  }));
+}
+
+export function expectedLogSources() {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key='expected_log_sources'").get() as { value?: string } | undefined;
+  return (row?.value ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+export function setExpectedLogSources(sources: string[]) {
+  db.prepare("INSERT INTO app_settings(key,value,updated_at) VALUES('expected_log_sources',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP").run(sources.join(","));
+}
+
+// Item 7: minutes since the last event of each source an admin expects to be continuous; a source that never arrived is CRITICAL.
+// ponytail: only listed sources are judged, so bursty sources (e.g. app audit) do not raise false alarms; 90-day coverage is not checked yet.
+function logSyncSubjects(_p: Policy, now: Date): Subject[] {
+  return expectedLogSources().map((source) => {
+    const last = (db.prepare("SELECT MAX(occurred_at) AS at FROM log_events WHERE source=?").get(source) as { at: string | null }).at;
+    return last
+      ? { key: `source:${source}`, label: source, value: Math.max(0, Math.round((now.getTime() - new Date(last).getTime()) / 6000) / 10), observedAt: now.toISOString() }
+      : { key: `source:${source}`, label: `${source} (no logs received)`, value: null, observedAt: now.toISOString(), forceLevel: "CRITICAL" as Level };
+  });
+}
+
+// Item 4: seconds a persistent WebSocket stream is down (see ws-watcher.ts). No watcher yet means no data.
+function wssSubjects(_p: Policy, now: Date): Subject[] {
+  const rows = db.prepare("SELECT id,name FROM projects WHERE monitor_type='WEBSOCKET' AND enabled=1 AND maintenance=0").all() as Array<{ id: number; name: string }>;
+  return rows.map((r) => ({ key: `project:${r.id}`, label: r.name, value: wsDropoutSeconds(r.id, now), observedAt: now.toISOString() }));
+}
+
 const evaluators: Record<string, (p: Policy, now: Date) => Subject[]> = {
+  wss_dropout_seconds: wssSubjects,
+  network_latency_ms: pingSubjects,
+  mongo_connections_percent: mongoSubjects,
+  log_gap_minutes: logSyncSubjects,
   ssl_days_left: sslSubjects,
   uptime_sla_percent: slaSubjects,
   backup_age_ratio: backupSubjects,
@@ -140,8 +194,8 @@ export function evaluateSubjects(p: Policy, now = new Date()) {
   const subjects = evaluators[p.metricKey]?.(p, now) ?? [];
   return subjects.map((s) => {
     const stale = !s.observedAt || now.getTime() - new Date(s.observedAt).getTime() > (s.staleMs ?? STALE_MS);
-    let level: Level = stale || s.value === null ? "NO_DATA" : classify(s.value, p);
-    if (level !== "NO_DATA" && s.forceLevel) level = s.forceLevel; // e.g. latest backup FAILED
+    // forceLevel: a condition the numeric value cannot express (failed backup, packet loss, replication lag, a source that never arrived).
+    let level: Level = stale ? "NO_DATA" : s.forceLevel ?? (s.value === null ? "NO_DATA" : classify(s.value, p));
     if (level === "CRITICAL" && p.direction === "HIGH" && s.sustained === false) level = "WARNING"; // not yet sustained for the full duration
     return { ...s, level };
   });
@@ -230,7 +284,7 @@ export function healthStatus() {
     const subjects = states.filter((s) => s.policyNo === p.no);
     return { ...p, thresholds: thresholdText(p), enabled: Boolean(p.enabled), warningInclusive: Boolean(p.warningInclusive), level: p.enabled ? worst(subjects.map((s) => s.level)) : "NO_DATA" as Level, subjects };
   });
-  return { items, summary: { normal: items.filter((i) => i.level === "NORMAL").length, warning: items.filter((i) => i.level === "WARNING").length, critical: items.filter((i) => i.level === "CRITICAL").length, noData: items.filter((i) => i.level === "NO_DATA").length } };
+  return { items, expectedLogSources: expectedLogSources(), summary: { normal: items.filter((i) => i.level === "NORMAL").length, warning: items.filter((i) => i.level === "WARNING").length, critical: items.filter((i) => i.level === "CRITICAL").length, noData: items.filter((i) => i.level === "NO_DATA").length } };
 }
 
 export function updatePolicy(no: number, v: { warningValue: number | null; criticalValue: number | null; durationSeconds: number; enabled: boolean }) {

@@ -9,7 +9,7 @@ type Project = {
   id: number; name: string; supabaseUrl: string; intervalSeconds: number; timeoutSeconds: number;
   retryCount: number; enabled: boolean; lastStatus: string; lastMessage: string | null;
   lastCheckedAt: string | null; nextCheckAt: string | null;
-  monitorType: "SUPABASE" | "HTTP" | "TCP" | "PING" | "DNS" | "SSL" | "DOCKER" | "DATABASE"; target: string | null; httpMethod: string;
+  monitorType: "SUPABASE" | "HTTP" | "TCP" | "PING" | "DNS" | "SSL" | "DOCKER" | "DATABASE" | "WEBSOCKET"; target: string | null; httpMethod: string;
   expectedStatus: number | null; keyword: string | null; tcpHost: string | null; tcpPort: number | null;
   maintenance: boolean;
   dnsRecordType: string; sslPort: number; sslExpiryDays: number; dockerContainer: string | null; published: boolean;
@@ -22,7 +22,7 @@ type HealthLevel = "NORMAL" | "WARNING" | "CRITICAL" | "NO_DATA";
 type HealthItem = { no: number; nameTh: string; nameEn: string; checkTh: string; frequencyTh: string; unit: string; level: HealthLevel; enabled: boolean;
   warningValue: number | null; criticalValue: number | null; durationSeconds: number; thresholds: { normal: string; warning: string; critical: string };
   subjects: Array<{ subjectKey: string; label: string; level: HealthLevel; value: number | null; since: string }> };
-type HealthStatus = { items: HealthItem[]; summary: { normal: number; warning: number; critical: number; noData: number } };
+type HealthStatus = { items: HealthItem[]; expectedLogSources: string[]; summary: { normal: number; warning: number; critical: number; noData: number } };
 type Incident = { id:number;projectId:number;projectName:string;status:string;message:string|null;severity:string;owner:string|null;rootCause:string|null;correctiveAction:string|null;lessonsLearned:string|null;reviewStatus:string;reviewedAt:string|null;reviewedBy:string|null;startedAt:string;resolvedAt:string|null };
 type Delivery = { id: number; notificationName: string; projectName: string | null; event: string; success: boolean; errorMessage: string | null; createdAt: string };
 type Heartbeat = {
@@ -241,7 +241,13 @@ const health = ref<HealthStatus | null>(null);
 const healthEditing = ref<number | null>(null);
 const thai = computed(() => locale.value === "th-TH");
 const unitText = (value: number | null, unit: string) => (value === null ? "—" : `${value}${unit === "%" || unit === "x" ? "" : " "}${unit}`);
-async function loadHealth() { health.value = await api<HealthStatus>("/api/health"); }
+const logSourcesText = ref("");
+async function loadHealth() { health.value = await api<HealthStatus>("/api/health"); if (document.activeElement?.id !== "log-sources") logSourcesText.value = health.value.expectedLogSources.join(", "); }
+async function saveLogSources() {
+  busy.value = true; error.value = "";
+  try { await api("/api/health/log-sources", { method: "PUT", body: JSON.stringify({ sources: logSourcesText.value.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean) }) }); await loadHealth(); }
+  catch (value) { error.value = value instanceof Error ? value.message : "Unable to save log sources"; } finally { busy.value = false; }
+}
 async function saveHealthPolicy(item: HealthItem) {
   busy.value = true; error.value = "";
   try { await api(`/api/health/policies/${item.no}`, { method: "PUT", body: JSON.stringify({ warningValue: item.warningValue, criticalValue: item.criticalValue, durationSeconds: item.durationSeconds, enabled: item.enabled }) }); healthEditing.value = null; await loadHealth(); }
@@ -370,7 +376,7 @@ async function saveProject() {
     if (form.monitorType !== "SUPABASE") { delete body.supabaseUrl; delete body.publishableKey; }
     if (form.monitorType !== "HTTP") { delete body.target; delete body.expectedStatus; delete body.keyword; }
     if (form.monitorType !== "TCP") { delete body.tcpHost; delete body.tcpPort; }
-    if (!["HTTP", "PING", "DNS", "SSL"].includes(form.monitorType)) delete body.target;
+    if (!["HTTP", "PING", "DNS", "SSL", "WEBSOCKET"].includes(form.monitorType)) delete body.target;
     if (form.monitorType !== "DNS") delete body.dnsRecordType;
     if (form.monitorType !== "SSL") { delete body.sslPort; delete body.sslExpiryDays; }
     if (form.monitorType !== "DOCKER") delete body.dockerContainer;
@@ -680,6 +686,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
             <div v-if="healthEditing === item.no" class="health-edit"><label>Warning<input v-model.number="item.warningValue" type="number" step="any"></label><label>Critical<input v-model.number="item.criticalValue" type="number" step="any"></label><label>{{ thai ? 'ต่อเนื่อง (วินาที)' : 'Duration (s)' }}<input v-model.number="item.durationSeconds" type="number" min="0" max="86400"></label><label class="check"><input v-model="item.enabled" type="checkbox"> {{ thai ? 'เปิดใช้งาน' : 'Enabled' }}</label><button class="primary" :disabled="busy" @click="saveHealthPolicy(item)">{{ thai ? 'บันทึก' : 'Save' }}</button><button class="secondary" @click="healthEditing = null; loadHealth()">{{ thai ? 'ยกเลิก' : 'Cancel' }}</button></div>
           </template>
         </div></section>
+        <section v-if="isAdmin && health" class="panel page-panel health-sources"><label>{{ thai ? 'แหล่ง log ที่ต้องส่งต่อเนื่อง (ข้อ 7) — คั่นด้วยจุลภาค เช่น host, nginx, vpn' : 'Log sources expected continuously (item 7) — comma separated, e.g. host, nginx, vpn' }}<input id="log-sources" v-model="logSourcesText" placeholder="host, nginx, vpn, firewall, db"></label><button class="primary" :disabled="busy" @click="saveLogSources">{{ thai ? 'บันทึก' : 'Save' }}</button></section>
       </template>
 
       <template v-else-if="activeView === 'agents'">
@@ -875,7 +882,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
     <form class="modal" @submit.prevent="saveProject">
       <div class="modal-head"><div><h2>{{ editingId?t('setup.projectEdit'):t('setup.projectAdd') }}</h2><p>{{ t('setup.projectSub') }}</p></div><button type="button" class="close" @click="showProjectForm = false">×</button></div>
       <label>{{ t('setup.projectName') }}<input v-model="form.name" required maxlength="100" placeholder="Customer portal"></label>
-      <label>{{ t('setup.monitorType') }}<select v-model="form.monitorType"><option value="SUPABASE">Supabase database heartbeat</option><option value="DATABASE">Database health (PostgreSQL / MySQL / SQL Server / MongoDB)</option><option value="HTTP">HTTP / HTTPS</option><option value="TCP">TCP port</option><option value="PING">Ping / ICMP</option><option value="DNS">DNS record</option><option value="SSL">SSL certificate</option><option value="DOCKER">Docker container</option></select></label>
+      <label>{{ t('setup.monitorType') }}<select v-model="form.monitorType"><option value="SUPABASE">Supabase database heartbeat</option><option value="DATABASE">Database health (PostgreSQL / MySQL / SQL Server / MongoDB)</option><option value="HTTP">HTTP / HTTPS</option><option value="TCP">TCP port</option><option value="PING">Ping / ICMP</option><option value="DNS">DNS record</option><option value="SSL">SSL certificate</option><option value="DOCKER">Docker container</option><option value="WEBSOCKET">WebSocket stream (persistent)</option></select></label>
       <template v-if="form.monitorType === 'SUPABASE'">
       <label>Supabase URL<input v-model="form.supabaseUrl" required type="url" placeholder="https://abc.supabase.co"></label>
       <label>Publishable / anon key<input v-model="form.publishableKey" :required="!editingId" type="password" :placeholder="editingId ? 'Leave blank to keep current key' : 'eyJ…'"><small v-if="editingId" class="field-note">✓ A key is stored encrypted. Enter a value only to replace it.</small></label>
@@ -898,6 +905,9 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
       </template>
       <template v-else-if="form.monitorType === 'PING'">
         <label>{{ t('setup.hostnameIp') }}<input v-model="form.target" required placeholder="server.example.com"></label>
+      </template>
+      <template v-else-if="form.monitorType === 'WEBSOCKET'">
+        <label>WebSocket URL<input v-model="form.target" required placeholder="wss://stream.example.com/vitals"></label><p class="field-note">{{ thai ? 'Byakugan เปิดการเชื่อมต่อค้างไว้และบันทึกทุกครั้งที่หลุด ใช้ตัดสิน Health Check ข้อ 4' : 'Byakugan keeps this connection open and records every drop; it feeds Health Check item 4.' }}</p>
       </template>
       <template v-else-if="form.monitorType === 'DNS'">
         <div class="form-grid"><label>Hostname<input v-model="form.target" required placeholder="example.com"></label><label>Record type<select v-model="form.dnsRecordType"><option>A</option><option>AAAA</option><option>CNAME</option><option>MX</option><option>TXT</option><option>NS</option><option>SRV</option></select></label></div>

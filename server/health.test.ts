@@ -97,6 +97,57 @@ describe("health engine", () => {
     expect((db.prepare("SELECT COUNT(*) AS n FROM backup_evidence WHERE asset_name='cms'").get() as { n: number }).n).toBe(3);
   });
 
+  it("parses ping output from Linux and Windows", async () => {
+    const { parsePing } = await import("./monitor.js");
+    expect(parsePing("4 packets transmitted, 3 received, 25% packet loss\n64 bytes: icmp_seq=1 ttl=57 time=10.0 ms\n64 bytes: time=20.0 ms\n64 bytes: time=30.0 ms")).toEqual({ lossPercent: 25, avgMs: 20 });
+    expect(parsePing("Reply from 1.1.1.1: bytes=32 time=12ms TTL=57\nReply from 1.1.1.1: bytes=32 time<1ms TTL=57\nPackets: Sent = 4, Received = 2, Lost = 2 (50% loss),")).toEqual({ lossPercent: 50, avgMs: 6.5 });
+    expect(parsePing("Request timed out.")).toEqual({ lossPercent: null, avgMs: null });
+  });
+
+  it("judges ping latency and loss, Mongo connections and lag, and log freshness", async () => {
+    const logs = await import("./log-events.js");
+    const now = new Date(), iso = (m: number) => new Date(now.getTime() - m * 60000).toISOString();
+    const add = (name: string, type: string, extra = "") => Number(db.prepare(`INSERT INTO projects(name,monitor_type,target,supabase_url,encrypted_key,interval_seconds${extra ? ",database_engine" : ""}) VALUES(?,?,?,?,?,60${extra ? ",?" : ""})`).run(...[name, type, "h.test", "https://x.test", "k", ...(extra ? [extra] : [])]).lastInsertRowid);
+    const ping = (name: string, status: string, ms: number | null, loss: number | null) => db.prepare("INSERT INTO heartbeats(project_id,status,response_time_ms,attempt,checked_at,metric_value,loss_percent) VALUES(?,?,10,1,?,?,?)").run(add(name, "PING"), status, iso(0), ms, loss);
+    ping("p-fast", "UP", 20, 0); ping("p-slow", "UP", 60, 0); ping("p-lossy", "UP", 20, 25); ping("p-half", "UP", 20, 50); ping("p-dead", "DOWN", null, 100); ping("p-worse", "UP", 200, 0);
+    const mongo = (name: string, used: number, lag: number | null) => db.prepare("INSERT INTO database_metrics(project_id,engine,connections_used,connections_max,replication_lag_seconds,details_json,observed_at) VALUES(?,?,?,?,?,'{}',?)").run(add(name, "DATABASE", "MONGODB"), "MONGODB", used, 100, lag, iso(0));
+    mongo("m-ok", 50, 0); mongo("m-busy", 85, 0); mongo("m-full", 95, 0); mongo("m-lag", 10, 6);
+    logs.ingestLogs(agentId, [{ source: "host", event: "SUDO_COMMAND", timestamp: iso(1), severity: "info", details: {} }]);
+    health.setExpectedLogSources(["host", "nginx"]);
+    health.evaluateHealth();
+    const level = (no: number, label: string) => (db.prepare("SELECT level FROM health_state WHERE policy_no=? AND label LIKE ?").get(no, `${label}%`) as { level: string }).level;
+    expect(["p-fast", "p-slow", "p-lossy", "p-half", "p-dead", "p-worse"].map((n) => level(5, n))).toEqual(["NORMAL", "WARNING", "WARNING", "CRITICAL", "CRITICAL", "CRITICAL"]);
+    expect(["m-ok", "m-busy", "m-full", "m-lag"].map((n) => level(6, n))).toEqual(["NORMAL", "WARNING", "CRITICAL", "CRITICAL"]);
+    expect(level(7, "host")).toBe("NORMAL"); // last event 1 minute ago, under the 5 minute warning
+    expect(level(7, "nginx")).toBe("CRITICAL"); // expected source that never sent anything
+  });
+
+  it("measures a persistent WebSocket stream and its dropouts", async () => {
+    const { WebSocketServer } = await import("ws");
+    const watcher = await import("./ws-watcher.js");
+    const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise((resolve) => server.once("listening", resolve));
+    const port = (server.address() as { port: number }).port;
+    const project = Number(db.prepare("INSERT INTO projects(name,monitor_type,target,supabase_url,encrypted_key,interval_seconds) VALUES('stream','WEBSOCKET',?,?,?,60)").run(`ws://127.0.0.1:${port}`, "https://x.test", "k").lastInsertRowid);
+    const until = async (done: () => boolean) => { for (let i = 0; i < 100 && !done(); i++) await new Promise((r) => setTimeout(r, 50)); expect(done()).toBe(true); };
+    try {
+      watcher.syncWatchers();
+      await until(() => watcher.wsStatus(project)?.connected === true);
+      expect(watcher.wsDropoutSeconds(project)).toBe(0);
+      for (const client of server.clients) client.terminate(); // drop the stream; the server keeps listening
+      await until(() => watcher.wsStatus(project)?.connected === false);
+      await until(() => watcher.wsStatus(project)?.connected === true); // reconnect after ~0.5 s
+      const gap = watcher.wsDropoutSeconds(project)!;
+      expect(gap).toBeGreaterThan(0);
+      expect(gap).toBeLessThan(3);
+      health.evaluateHealth();
+      expect((db.prepare("SELECT level FROM health_state WHERE policy_no=4 AND label='stream'").get() as { level: string }).level).toBe("WARNING");
+    } finally {
+      watcher.stopWatchers();
+      server.close();
+    }
+  });
+
   it("renders thresholds in the wording of the standard and exports flat rows", () => {
     const rows = health.healthRows();
     expect(rows).toHaveLength(10);
@@ -107,9 +158,11 @@ describe("health engine", () => {
     expect(health.withUnit(94, "%")).toBe("94%");
   });
 
-  it("reports all ten items and leaves unmeasured ones as NO_DATA", () => {
+  it("reports all ten items, each now backed by an evaluator", () => {
     const status = health.healthStatus();
     expect(status.items).toHaveLength(10);
-    expect(status.items.find((i) => i.no === 4)?.level).toBe("NO_DATA");
+    expect(status.items.filter((i) => i.level === "NO_DATA")).toEqual([]);
+    expect(status.items.find((i) => i.no === 4)?.level).toBe("WARNING");
+    expect(status.expectedLogSources).toEqual(["host", "nginx"]);
   });
 });

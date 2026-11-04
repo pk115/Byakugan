@@ -139,7 +139,8 @@ ensureColumn("incidents", "review_status", "TEXT NOT NULL DEFAULT 'PENDING'");
 ensureColumn("incidents", "reviewed_by", "INTEGER");
 ensureColumn("incidents", "reviewed_at", "TEXT");
 ensureColumn("notifications", "help_desk", "INTEGER NOT NULL DEFAULT 0");
-ensureColumn("heartbeats", "metric_value", "REAL"); // SSL: days until expiry
+ensureColumn("heartbeats", "metric_value", "REAL"); // SSL: days until expiry, PING: average latency (ms)
+ensureColumn("heartbeats", "loss_percent", "REAL"); // PING packet loss
 // Health Check incidents have no monitor: rebuild once so project_id can be NULL (nothing references incidents).
 if ((db.pragma("table_info(incidents)") as Array<{ name: string; notnull: number }>).find((c) => c.name === "project_id")?.notnull) {
   db.transaction(() => db.exec(`
@@ -593,7 +594,7 @@ export type ProjectRow = {
   next_check_at: string | null;
   created_at: string;
   updated_at: string;
-  monitor_type: "SUPABASE" | "HTTP" | "TCP" | "PING" | "DNS" | "SSL" | "DOCKER" | "DATABASE";
+  monitor_type: "SUPABASE" | "HTTP" | "TCP" | "PING" | "DNS" | "SSL" | "DOCKER" | "DATABASE" | "WEBSOCKET";
   target: string | null;
   http_method: string;
   expected_status: number | null;
