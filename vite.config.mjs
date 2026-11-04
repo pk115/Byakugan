@@ -13,6 +13,6 @@ export default defineConfig({
     outDir: "dist-web"
   },
   test: {
-    exclude: ["**/node_modules/**", "outputs/**", "work/**", "dist-*/**"]
+    exclude: ["**/node_modules/**", "outputs/**", "work/**", "dist-*/**", "agent/**/*.test.mjs"] // agent tests use node:test: node --test agent/log-collector.test.mjs
   }
 });
