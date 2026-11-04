@@ -55,9 +55,9 @@ The agent also ships security-relevant Windows events to Byakugan (`POST /api/ag
 | System | 7045 | `SERVICE_INSTALLED` |
 | Microsoft-Windows-Backup | 4 / any Error or Critical | `BACKUP_COMPLETE` / `BACKUP_FAILED` |
 
-The last processed record id per log is kept in `%ProgramData%Byakuganlog-state.json`; it is advanced only after the server accepted the batch, and duplicates are ignored server-side, so retries are safe. The service must run as `SYSTEM`/administrator to read the Security log.
+The last processed record id per log is kept in `%ProgramData%\Byakugan\log-state.json`; it is advanced only after the server accepted the batch, and duplicates are ignored server-side, so retries are safe. The service must run as `SYSTEM`/administrator to read the Security log.
 
-Optional settings in `%ProgramData%Byakuganagent.json` (preserved when the installer repairs the agent):
+Optional settings in `%ProgramData%\Byakugan\agent.json` (preserved when the installer repairs the agent):
 
 ```json
 { "logs": true, "logIntervalSeconds": 60, "logBackfillHours": 1 }
@@ -70,8 +70,8 @@ Optional settings in `%ProgramData%Byakuganagent.json` (preserved when the insta
 Try it without sending anything (elevated PowerShell), and run the mapping tests:
 
 ```powershell
-.yakugan-agent.ps1 -LogDryRun        # prints the normalized events as JSON
-.Test-LogMapping.ps1                  # fabricated events, no server needed
+.\byakugan-agent.ps1 -LogDryRun        # prints the normalized events as JSON
+.\Test-LogMapping.ps1                  # fabricated events, no server needed
 ```
 
 Note: service state text in event 7036 is localized; only English `running`/`stopped` are mapped.
