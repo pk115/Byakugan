@@ -195,3 +195,5 @@ nav button .app-icon{width:19px;height:19px;stroke-width:1.7}.empty-icon .app-ic
 nav button{align-items:center}.nav-badge{align-self:center;flex-shrink:0;line-height:1.4;min-height:20px}
 
 @media(max-width:700px){.content header{flex-wrap:wrap}.content header .detail-actions{flex-wrap:wrap}}
+
+.finding-workflow-fields{border:0;padding:0;margin:0;min-width:0}.finding-next-step{color:#bdcde3!important}

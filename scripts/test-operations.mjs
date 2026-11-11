@@ -39,6 +39,9 @@ try {
   await ok(`/api/findings/${finding.id}`,"PUT",{status:"ACKNOWLEDGED",owner:"Operations"});
   await ingest();
   assert.equal(db.prepare("SELECT status FROM compliance_findings WHERE id=?").get(finding.id).status,"ACKNOWLEDGED");
+  const actionDetails=(await ok("/api/action-required")).find(item=>item.id===finding.id);
+  assert.equal(actionDetails.findingKey,"security_updates");
+  assert.ok(actionDetails.explanation&&actionDetails.firstDetectedAt&&actionDetails.lastDetectedAt);
   payload.inventory.securityUpdateCount=0;await ingest();
   assert.equal(db.prepare("SELECT status FROM compliance_findings WHERE id=?").get(finding.id).status,"RESOLVED");
   console.log("PASS Agent acknowledgement survives ingest and resolves on recovery");
