@@ -9,6 +9,15 @@ permissions:
   contents: read
 
 jobs:
+  windows-agent:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Windows scan execution and log mapping
+        shell: powershell
+        run: |
+          ./agent-windows/Test-ScanJob.ps1
+          ./agent-windows/Test-LogMapping.ps1
   test:
     runs-on: ubuntu-latest
     steps:

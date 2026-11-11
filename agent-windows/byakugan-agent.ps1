@@ -54,7 +54,7 @@ function Get-AgentPayload {
     $installed = @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object DisplayName).Count
     $boot = if ($os.LastBootUpTime -is [DateTime]) { $os.LastBootUpTime } else { [Management.ManagementDateTimeConverter]::ToDateTime([string]$os.LastBootUpTime) }
     @{
-        agentVersion = "0.5.0-windows"; observedAt = (Get-Date).ToUniversalTime().ToString("o"); hostname = $env:COMPUTERNAME
+        agentVersion = "0.5.1-windows"; observedAt = (Get-Date).ToUniversalTime().ToString("o"); hostname = $env:COMPUTERNAME
         inventory = @{
             osName = [string]$os.Caption; osVersion = [string]$os.Version; kernel = [string]$os.BuildNumber
             architecture = [string]$os.OSArchitecture; cpuModel = [string]$processors[0].Name
@@ -84,6 +84,13 @@ function Convert-TrivyReport {
     $findings | ForEach-Object { $_ }
 }
 
+function ConvertTo-NativeArgument {
+    param([string]$Value)
+    # Windows consumes backslashes before quotes: double them before embedded/closing quotes.
+    $escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    '"' + [regex]::Replace($escaped, '(\\+)$', '$1$1') + '"'
+}
+
 function Invoke-ScanJob {
     try { $response = Invoke-ByakuganApi "/api/agent/scan-jobs/next" } catch { Write-Warning $_; return }
     $job = if ($response.job) { $response.job } else { $response }
@@ -100,8 +107,10 @@ function Invoke-ScanJob {
         if (($subcommand -eq "fs" -or $subcommand -eq "rootfs") -and $target -eq "/") { $target = "$env:SystemDrive\" }
         $arguments = @($subcommand,"--quiet","--scanners",(@($job.scanners) -join ','),"--severity",(@($job.severity) -join ','),"--format","json","--output",$temp,$target)
         $stdout = Join-Path $env:TEMP "byakugan-trivy-$($job.id).stdout.log"; $stderr = Join-Path $env:TEMP "byakugan-trivy-$($job.id).stderr.log"
-        $argumentLine = ($arguments | ForEach-Object { '"' + ([string]$_).Replace('"','\"') + '"' }) -join ' '
+        $argumentLine = ($arguments | ForEach-Object { ConvertTo-NativeArgument ([string]$_) }) -join ' '
         $process = Start-Process -FilePath ([string]$trivy) -ArgumentList $argumentLine -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
+        # Retain the native handle so Windows PowerShell 5.1 can read ExitCode after waiting.
+        $process.Handle | Out-Null
         while (!$process.WaitForExit(15000)) { try { Invoke-ByakuganApi "/api/agent/scan-jobs/$($job.id)/progress" "POST" @{ progress = 50 } | Out-Null } catch {} }
         $trivyOutput = ((Get-Content -LiteralPath $stderr,$stdout -Raw -ErrorAction SilentlyContinue) -join "`n").Trim()
         Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
