@@ -66,6 +66,16 @@ try {
   const result=await ok("/api/health/run","POST");
   assert.equal(result.checkedMonitors,1);assert.ok(result.checkedAt&&result.health.items.length===10);
   assert.equal(db.prepare("SELECT status FROM heartbeats WHERE project_id=? ORDER BY id DESC LIMIT 1").get(project.id).status,"UP");
+  const {createHash}=await import("node:crypto");
+  for (const scope of ["all",`agent:${agent.id}`]) {
+    const response=await request(`/api/audit/report.servers.xlsx?scope=${encodeURIComponent(scope)}`);
+    assert.equal(response.status,200);
+    const bytes=Buffer.from(await response.arrayBuffer());
+    assert.equal(bytes.subarray(0,2).toString(),"PK");
+    assert.equal(response.headers.get("x-content-sha256"),createHash("sha256").update(bytes).digest("hex"));
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM audit_events WHERE action='SERVER_EVIDENCE_EXPORTED'").get().n,2);
+  console.log("PASS scoped Excel exports, response checksum and export audit trail");
   console.log("PASS Check now performs a real HTTP probe and evaluates health");
   const old="2020-01-01T00:00:00.000Z";
   const oldBeat=Number(db.prepare("INSERT INTO heartbeats(project_id,status,response_time_ms,attempt,checked_at) VALUES(?,'UP',1,1,?)").run(project.id,old).lastInsertRowid);
@@ -139,6 +149,7 @@ try {
   const viewer=await request("/api/auth/login","POST",{username:"testviewer",password:"LocalViewerTest123!"});
   cookie=viewer.headers.get("set-cookie").split(";")[0];
   assert.equal((await request("/api/health/run","POST")).status,403);
+  assert.equal((await request("/api/audit/report.servers.xlsx?scope=all")).status,403);
   assert.equal((await request("/api/settings/data/preview","POST",{categories:["logs"],olderThanDays:null})).status,403);
   assert.equal((await request("/api/settings/data/cleanup","POST",{previewId:plan.id,confirmation:"DELETE HISTORY"})).status,403);
   assert.equal((await request(`/api/incidents/${incident}/review`,"PUT",review)).status,403);

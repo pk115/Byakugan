@@ -28,6 +28,7 @@ import { evaluateLogAlerts, ingestLogs, logBatchSchema, logSummary, queryLogs } 
 import { healthHistory, healthRows, healthStatus, setExpectedLogSources, updatePolicy } from "./health.js";
 import { systemRegional } from "./localization.js";
 import { cleanupSchema, previewCleanup, executeCleanup } from "./data-management.js";
+import { createServerEvidence, evidenceScope } from "./server-evidence.js";
 
 const app = Fastify({ logger: { level: config.isProduction ? "info" : "warn" }, bodyLimit: 64 * 1024, trustProxy: (_address: string, hop: number) => hop < config.trustProxyHops }); // trust the first N hops; 0 trusts none
 await app.register(cookie);
@@ -838,6 +839,16 @@ app.get("/api/audit/events", { preHandler: requireAuth }, async (request) => {
 app.get("/api/audit/verify", { preHandler: requireAuth }, async () => verifyAuditChain());
 
 app.get("/api/audit/report.pdf",{preHandler:requireAuth},async(request,reply)=>{try{const query=request.query as {from?:string;to?:string},period=auditPeriod(query.from,query.to),preferences=reportPreferences(request);const buffer=await createPdfReport(collectAuditReport(period.from,period.to),preferences.locale,preferences.timezone);appendAuditEvent(actor(request),"AUDIT_REPORT_DOWNLOADED","report","PDF",{...period,...preferences,sha256:reportSha256(buffer)});return reply.header("Content-Disposition",`attachment; filename="byakugan-audit-${period.from.slice(0,10)}-${preferences.locale}.pdf"`).type("application/pdf").send(buffer)}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:"Unable to create PDF"})}});
+app.get("/api/audit/report.servers.xlsx", { preHandler: requireAuth, config: { rateLimit: { max: 3, timeWindow: "1 minute" } } }, async (request, reply) => {
+  const query = parse(z.object({ from: z.string().optional(), to: z.string().optional(), scope: z.string().max(50).default("all") }), request.query, reply);
+  if (!query) return;
+  try {
+    const period = auditPeriod(query.from, query.to), scope = evidenceScope(query.scope), preferences = reportPreferences(request);
+    const result = await createServerEvidence(period.from, period.to, scope, preferences.locale, preferences.timezone);
+    appendAuditEvent(actor(request), "SERVER_EVIDENCE_EXPORTED", "report", query.scope, { ...period, ...preferences, scope: result.scope, counts: result.counts, sha256: reportSha256(result.buffer) });
+    return reply.header("Cache-Control", "no-store").header("X-Content-SHA256", reportSha256(result.buffer)).header("Content-Disposition", `attachment; filename="byakugan-server-evidence-${query.scope.replace(":", "-")}-${period.from.slice(0, 10)}.xlsx"`).type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet").send(result.buffer);
+  } catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "Unable to export server evidence" }); }
+});
 app.get("/api/audit/report.xlsx",{preHandler:requireAuth},async(request,reply)=>{try{const query=request.query as {from?:string;to?:string},period=auditPeriod(query.from,query.to),preferences=reportPreferences(request);const buffer=await createXlsxReport(collectAuditReport(period.from,period.to),preferences.locale,preferences.timezone);appendAuditEvent(actor(request),"AUDIT_REPORT_DOWNLOADED","report","XLSX",{...period,...preferences,sha256:reportSha256(buffer)});return reply.header("Content-Disposition",`attachment; filename="byakugan-audit-${period.from.slice(0,10)}-${preferences.locale}.xlsx"`).type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet").send(buffer)}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:"Unable to create XLSX"})}});
 app.get("/api/report-delivery-channels",{preHandler:requireAuth},async()=>db.prepare(`SELECT id,name,type,encrypted_config AS encryptedConfig,enabled,created_at AS createdAt,updated_at AS updatedAt FROM report_delivery_channels ORDER BY name`).all().map((row:any)=>{let policy:Record<string,unknown>={};if(row.type==="S3"){try{const value=JSON.parse(decrypt(row.encryptedConfig));policy={wormMode:value.wormMode??"NONE",retentionDays:value.retentionDays??365,legalHold:Boolean(value.legalHold)}}catch{policy={wormMode:"UNKNOWN",retentionDays:null,legalHold:false}}}const{encryptedConfig,...safe}=row;void encryptedConfig;return{...safe,...policy,enabled:Boolean(row.enabled),configured:true}}));
 app.post("/api/report-delivery-channels/test",{preHandler:requireAuth},async(request,reply)=>{const body=parse(reportDeliveryChannelSchema,request.body,reply);if(!body)return;try{return await testDeliveryChannel(deliveryConfig(body))}catch(error){return reply.code(400).send({error:`Delivery channel test failed (${deliveryErrorCode(error)})`})}});
