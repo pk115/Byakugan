@@ -100,6 +100,7 @@ ensureColumn("projects", "target", "TEXT");
 ensureColumn("projects", "http_method", "TEXT NOT NULL DEFAULT 'GET'");
 ensureColumn("projects", "expected_status", "INTEGER");
 ensureColumn("projects", "keyword", "TEXT");
+ensureColumn("projects", "ignore_tls_errors", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("projects", "tcp_host", "TEXT");
 ensureColumn("projects", "tcp_port", "INTEGER");
 ensureColumn("projects", "maintenance", "INTEGER NOT NULL DEFAULT 0");
@@ -599,6 +600,7 @@ export type ProjectRow = {
   http_method: string;
   expected_status: number | null;
   keyword: string | null;
+  ignore_tls_errors: number;
   tcp_host: string | null;
   tcp_port: number | null;
   maintenance: number;
@@ -640,6 +642,7 @@ export function publicProject(row: ProjectRow) {
     ,httpMethod: row.http_method
     ,expectedStatus: row.expected_status
     ,keyword: row.keyword
+    ,ignoreTlsErrors: Boolean(row.ignore_tls_errors)
     ,tcpHost: row.tcp_host
     ,tcpPort: row.tcp_port
     ,maintenance: Boolean(row.maintenance)

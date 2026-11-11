@@ -10,7 +10,7 @@ type Project = {
   retryCount: number; enabled: boolean; lastStatus: string; lastMessage: string | null;
   lastCheckedAt: string | null; nextCheckAt: string | null;
   monitorType: "SUPABASE" | "HTTP" | "TCP" | "PING" | "DNS" | "SSL" | "DOCKER" | "DATABASE" | "WEBSOCKET"; target: string | null; httpMethod: string;
-  expectedStatus: number | null; keyword: string | null; tcpHost: string | null; tcpPort: number | null;
+  expectedStatus: number | null; keyword: string | null; ignoreTlsErrors: boolean; tcpHost: string | null; tcpPort: number | null;
   maintenance: boolean;
   dnsRecordType: string; sslPort: number; sslExpiryDays: number; dockerContainer: string | null; published: boolean;
   databaseEngine:"POSTGRESQL"|"MYSQL"|"SQLSERVER"|"MONGODB"|null;connectionConfigured:boolean;
@@ -151,7 +151,7 @@ notify pgrst, 'reload schema';`;
 const credentials = reactive({ username: "", password: "" });
 const form = reactive({
   name: "", monitorType: "SUPABASE" as Project["monitorType"], supabaseUrl: "", publishableKey: "",
-  target: "", httpMethod: "GET", expectedStatus: null as number | null, keyword: "",
+  target: "", httpMethod: "GET", ignoreTlsErrors: false, expectedStatus: null as number | null, keyword: "",
   tcpHost: "", tcpPort: null as number | null, intervalSeconds: 21600,
   timeoutSeconds: 15, retryCount: 2, enabled: true, maintenance: false, notificationIds: [] as number[]
   ,dnsRecordType: "A", sslPort: 443, sslExpiryDays: 14, dockerContainer: "", published: false
@@ -346,7 +346,7 @@ async function copyShareLink(page: ShareDashboard) {
 function resetForm() {
   editingId.value = null;
   Object.assign(form, { name: "", monitorType: "SUPABASE", supabaseUrl: "", publishableKey: "",
-    target: "", httpMethod: "GET", expectedStatus: null, keyword: "", tcpHost: "", tcpPort: null,
+    target: "", httpMethod: "GET", ignoreTlsErrors: false, expectedStatus: null, keyword: "", tcpHost: "", tcpPort: null,
     intervalSeconds: 21600, timeoutSeconds: 15, retryCount: 2, enabled: true, maintenance: false,
     notificationIds: [] });
   Object.assign(form, { dnsRecordType: "A", sslPort: 443, sslExpiryDays: 14, dockerContainer: "", published: false,databaseEngine:"POSTGRESQL",connectionString:"" });
@@ -358,7 +358,7 @@ async function openEdit(project: Project) {
   const links = await api<Array<{ notificationId: number }>>(`/api/projects/${project.id}/notifications`);
   Object.assign(form, { name: project.name, monitorType: project.monitorType, supabaseUrl: project.monitorType === "SUPABASE" ? project.supabaseUrl : "", publishableKey: "",
     target: project.target ?? "", httpMethod: project.httpMethod, expectedStatus: project.expectedStatus,
-    keyword: project.keyword ?? "", tcpHost: project.tcpHost ?? "", tcpPort: project.tcpPort,
+    ignoreTlsErrors: project.ignoreTlsErrors, keyword: project.keyword ?? "", tcpHost: project.tcpHost ?? "", tcpPort: project.tcpPort,
     intervalSeconds: project.intervalSeconds, timeoutSeconds: project.timeoutSeconds,
     retryCount: project.retryCount, enabled: project.enabled, maintenance: project.maintenance,
     notificationIds: links.map((link) => link.notificationId) });
@@ -374,7 +374,7 @@ async function saveProject() {
     const body: Record<string, unknown> = { ...form };
     delete body.notificationIds;
     if (form.monitorType !== "SUPABASE") { delete body.supabaseUrl; delete body.publishableKey; }
-    if (form.monitorType !== "HTTP") { delete body.target; delete body.expectedStatus; delete body.keyword; }
+    if (form.monitorType !== "HTTP") { delete body.target; delete body.expectedStatus; delete body.keyword; delete body.ignoreTlsErrors; }
     if (form.monitorType !== "TCP") { delete body.tcpHost; delete body.tcpPort; }
     if (!["HTTP", "PING", "DNS", "SSL", "WEBSOCKET"].includes(form.monitorType)) delete body.target;
     if (form.monitorType !== "DNS") delete body.dnsRecordType;
@@ -899,6 +899,8 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
         <label>{{ t('setup.targetUrl') }}<input v-model="form.target" required type="url" placeholder="https://example.com/health"></label>
         <div class="form-grid"><label>{{ t('setup.method') }}<select v-model="form.httpMethod"><option>GET</option><option>HEAD</option></select></label><label>{{ t('setup.expectedStatus') }}<input v-model.number="form.expectedStatus" type="number" min="100" max="599" placeholder="Any 2xx"></label></div>
         <label>{{ t('setup.keyword') }}<input v-model="form.keyword" placeholder="healthy"></label>
+        <label class="check"><input v-model="form.ignoreTlsErrors" type="checkbox">{{ t('setup.ignoreTlsErrors') }}</label>
+        <small v-if="form.ignoreTlsErrors" class="field-note">{{ t('setup.ignoreTlsWarning') }}</small>
       </template>
       <template v-else-if="form.monitorType === 'TCP'">
         <div class="form-grid"><label>{{ t('setup.host') }}<input v-model="form.tcpHost" required placeholder="db.example.com"></label><label>{{ t('setup.port') }}<input v-model.number="form.tcpPort" required type="number" min="1" max="65535" placeholder="5432"></label></div>

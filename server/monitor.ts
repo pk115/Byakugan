@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { promises as dns } from "node:dns";
 import { connect as tlsConnect } from "node:tls";
 import { request as httpRequest } from "node:http";
+import { Agent, fetch as httpFetch } from "undici";
 import { db, type ProjectRow } from "./database.js";
 import { decrypt } from "./crypto.js";
 import { dispatchNotifications } from "./notifications.js";
@@ -196,9 +197,11 @@ async function attemptHttpCheck(project: ProjectRow, attempt: number): Promise<C
   const started = performance.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), project.timeout_seconds * 1000);
+  const dispatcher = project.ignore_tls_errors ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
   try {
     if (!project.target) throw new Error("HTTP target URL is missing");
-    const response = await fetch(project.target, {
+    const response = await httpFetch(project.target, {
+      dispatcher,
       method: project.http_method || "GET",
       signal: controller.signal,
       redirect: "follow",
@@ -207,6 +210,7 @@ async function attemptHttpCheck(project: ProjectRow, attempt: number): Promise<C
     const elapsed = Math.round(performance.now() - started);
     const expected = project.expected_status;
     if (expected ? response.status !== expected : !response.ok) {
+      await response.body?.cancel();
       return { status: "DOWN", httpStatus: response.status, responseTimeMs: elapsed,
         message: expected ? `Expected HTTP ${expected}, received ${response.status}` : `HTTP ${response.status}`, attempt };
     }
@@ -216,14 +220,16 @@ async function attemptHttpCheck(project: ProjectRow, attempt: number): Promise<C
         return { status: "DOWN", httpStatus: response.status, responseTimeMs: elapsed,
           message: `Response did not contain keyword: ${project.keyword}`, attempt };
       }
-    }
+    } else await response.body?.cancel();
     return { status: "UP", httpStatus: response.status, responseTimeMs: elapsed, message: "Healthy", attempt };
   } catch (error) {
     const elapsed = Math.round(performance.now() - started);
-    const message = error instanceof Error ? (error.name === "AbortError" ? "Request timed out" : error.message) : "HTTP check failed";
+    const cause = error instanceof Error ? error.cause as { code?: string; message?: string } | undefined : undefined;
+    const message = error instanceof Error ? (error.name === "AbortError" ? "Request timed out" : [error.message, cause?.code, cause?.message].filter(Boolean).join(": ")) : "HTTP check failed";
     return { status: "DOWN", httpStatus: null, responseTimeMs: elapsed, message, attempt };
   } finally {
     clearTimeout(timeout);
+    await dispatcher?.destroy();
   }
 }
 

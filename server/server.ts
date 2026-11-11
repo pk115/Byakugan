@@ -43,6 +43,7 @@ const projectObject = z.object({
   publishableKey: z.string().max(4096).optional(),
   target: z.string().trim().max(2048).optional(),
   httpMethod: z.enum(["GET", "HEAD"]).default("GET"),
+  ignoreTlsErrors: z.boolean().default(false),
   expectedStatus: z.number().int().min(100).max(599).nullable().optional(),
   keyword: z.string().max(500).nullable().optional(),
   tcpHost: z.string().trim().max(253).optional(),
@@ -97,7 +98,7 @@ function validateProjectUrl(value: { supabaseUrl?: string }, context: z.Refineme
 }
 
 const projectSchema = projectObject.superRefine(validateProjectUrl);
-const updateProjectSchema = projectObject.partial();
+const updateProjectSchema = projectObject.partial().extend({ ignoreTlsErrors: z.boolean().optional() });
 
 const notificationSchema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -519,16 +520,16 @@ app.post("/api/projects", { preHandler: requireAuth }, async (request, reply) =>
   const result = db.prepare(`INSERT INTO projects
     (name, supabase_url, encrypted_key, interval_seconds, timeout_seconds, retry_count, enabled,
       next_check_at, monitor_type, target, http_method, expected_status, keyword, tcp_host, tcp_port, maintenance,
-      dns_record_type, ssl_port, ssl_expiry_days, docker_container, published, database_engine)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      dns_record_type, ssl_port, ssl_expiry_days, docker_container, published, database_engine, ignore_tls_errors)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(body.name, body.monitorType==="DATABASE"?`${body.databaseEngine} database`:body.supabaseUrl ?? body.target ?? body.dockerContainer ?? `tcp://${body.tcpHost}:${body.tcpPort}`,
       encrypt(body.monitorType==="DATABASE"?body.connectionString??"":body.publishableKey ?? ""), body.intervalSeconds, body.timeoutSeconds, body.retryCount,
       body.enabled ? 1 : 0, now, body.monitorType, body.supabaseUrl ?? body.target ?? null,
       body.httpMethod, body.expectedStatus ?? null, body.keyword ?? null, body.tcpHost ?? null,
       body.tcpPort ?? null, body.maintenance ? 1 : 0, body.dnsRecordType, body.sslPort,
-      body.sslExpiryDays, body.dockerContainer ?? null, body.published ? 1 : 0,body.databaseEngine??null);
+      body.sslExpiryDays, body.dockerContainer ?? null, body.published ? 1 : 0,body.databaseEngine??null,body.ignoreTlsErrors ? 1 : 0);
   const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(result.lastInsertRowid) as ProjectRow;
-  appendAuditEvent(actor(request),"MONITOR_CREATED","project",row.id,{name:row.name,monitorType:row.monitor_type,databaseEngine:row.database_engine});
+  appendAuditEvent(actor(request),"MONITOR_CREATED","project",row.id,{name:row.name,monitorType:row.monitor_type,databaseEngine:row.database_engine,ignoreTlsErrors:Boolean(row.ignore_tls_errors)});
   return reply.code(201).send(publicProject(row));
 });
 
@@ -541,7 +542,7 @@ app.patch("/api/projects/:id", { preHandler: requireAuth }, async (request, repl
   db.prepare(`UPDATE projects SET name = ?, supabase_url = ?, encrypted_key = ?, interval_seconds = ?,
     timeout_seconds = ?, retry_count = ?, enabled = ?, next_check_at = ?, updated_at = ?, monitor_type = ?,
     target = ?, http_method = ?, expected_status = ?, keyword = ?, tcp_host = ?, tcp_port = ?, maintenance = ?,
-    dns_record_type = ?, ssl_port = ?, ssl_expiry_days = ?, docker_container = ?, published = ?, database_engine = ?
+    dns_record_type = ?, ssl_port = ?, ssl_expiry_days = ?, docker_container = ?, published = ?, database_engine = ?, ignore_tls_errors = ?
     WHERE id = ?`)
     .run(body.name ?? current.name, body.supabaseUrl ?? body.target ?? current.supabase_url,
       body.connectionString?encrypt(body.connectionString):body.publishableKey ? encrypt(body.publishableKey) : current.encrypted_key,
@@ -554,8 +555,8 @@ app.patch("/api/projects/:id", { preHandler: requireAuth }, async (request, repl
       body.tcpPort ?? current.tcp_port, (body.maintenance ?? Boolean(current.maintenance)) ? 1 : 0,
       body.dnsRecordType ?? current.dns_record_type, body.sslPort ?? current.ssl_port,
       body.sslExpiryDays ?? current.ssl_expiry_days, body.dockerContainer ?? current.docker_container,
-      (body.published ?? Boolean(current.published)) ? 1 : 0,body.databaseEngine??current.database_engine, id);
-  appendAuditEvent(actor(request),"MONITOR_UPDATED","project",id,{monitorType:body.monitorType??current.monitor_type,databaseEngine:body.databaseEngine??current.database_engine,credentialsReplaced:Boolean(body.connectionString||body.publishableKey)});
+      (body.published ?? Boolean(current.published)) ? 1 : 0,body.databaseEngine??current.database_engine, (body.ignoreTlsErrors ?? Boolean(current.ignore_tls_errors)) ? 1 : 0, id);
+  appendAuditEvent(actor(request),"MONITOR_UPDATED","project",id,{monitorType:body.monitorType??current.monitor_type,databaseEngine:body.databaseEngine??current.database_engine,credentialsReplaced:Boolean(body.connectionString||body.publishableKey),previousIgnoreTlsErrors:Boolean(current.ignore_tls_errors),ignoreTlsErrors:body.ignoreTlsErrors??Boolean(current.ignore_tls_errors)});
   return publicProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow);
 });
 
