@@ -29,6 +29,7 @@ import { healthHistory, healthRows, healthStatus, setExpectedLogSources, updateP
 import { systemRegional } from "./localization.js";
 import { cleanupSchema, previewCleanup, executeCleanup } from "./data-management.js";
 import { createServerEvidence, evidenceScope } from "./server-evidence.js";
+import { monitorStatistics, publicMonitorStatistics } from "./monitor-statistics.js";
 
 const app = Fastify({ logger: { level: config.isProduction ? "info" : "warn" }, bodyLimit: 64 * 1024, trustProxy: (_address: string, hop: number) => hop < config.trustProxyHops }); // trust the first N hops; 0 trusts none
 await app.register(cookie);
@@ -425,11 +426,8 @@ app.put("/api/vulnerabilities/:id",{preHandler:requireAuth},async(request,reply)
 
 app.get("/api/public/status", async () => {
   const title = (db.prepare("SELECT value FROM app_settings WHERE key = 'status_title'").get() as { value?: string } | undefined)?.value || "Byakugan Status";
-  const rows = db.prepare(`SELECT p.*,
-    (SELECT COUNT(*) FROM heartbeats h WHERE h.project_id = p.id AND h.checked_at >= datetime('now', '-24 hours')) AS checks24h,
-    (SELECT COUNT(*) FROM heartbeats h WHERE h.project_id = p.id AND h.status = 'UP' AND h.checked_at >= datetime('now', '-24 hours')) AS up24h
-    FROM projects p WHERE p.published = 1 ORDER BY p.name`).all() as Array<ProjectRow & { checks24h: number; up24h: number }>;
-  const monitors = rows.map((row) => ({ ...publicProject(row), uptime24h: row.checks24h ? Math.round(row.up24h / row.checks24h * 10000) / 100 : null }));
+  const rows = db.prepare("SELECT * FROM projects WHERE published=1 ORDER BY name").all() as ProjectRow[];
+  const monitors = rows.map(row=>{const view=publicProject(row);return{id:view.id,name:view.name,monitorType:view.monitorType,lastStatus:view.lastStatus,lastCheckedAt:view.lastCheckedAt,...publicMonitorStatistics(row)}});
   const operational = monitors.every((item) => ["UP", "PENDING", "MAINTENANCE"].includes(item.lastStatus));
   return { title, operational, updatedAt: new Date().toISOString(), monitors };
 });
@@ -447,21 +445,13 @@ app.get("/api/share/:token", async (request, reply) => {
     WHERE sp.dashboard_id = ? ORDER BY sp.group_name, sp.sort_order, p.name`).all(dashboard.id) as Array<{
       id: number; name: string; monitorType: string; lastStatus: string; lastCheckedAt: string | null; intervalSeconds: number; groupName: string; sortOrder: number;
     }>;
-  const cutoff24h = new Date(Date.now() - 86400000).toISOString();
-  const heartbeatQuery = db.prepare(`SELECT status, response_time_ms AS responseTimeMs, checked_at AS checkedAt
-    FROM heartbeats WHERE project_id = ? ORDER BY checked_at DESC LIMIT 100`);
-  const uptimeQuery = db.prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'UP' THEN 1 ELSE 0 END) AS up,
-    AVG(CASE WHEN status = 'UP' THEN response_time_ms END) AS averageResponseMs
-    FROM heartbeats WHERE project_id = ? AND checked_at >= ?`);
+  const heartbeatQuery = db.prepare(`SELECT status, response_time_ms AS responseTimeMs, checked_at AS checkedAt FROM heartbeats WHERE project_id = ? ORDER BY checked_at DESC LIMIT 100`);
   const groups = new Map<string, unknown[]>();
   for (const row of rows) {
     const beats = heartbeatQuery.all(row.id).reverse() as Array<{ status: string; responseTimeMs: number; checkedAt: string }>;
-    const stats = uptimeQuery.get(row.id, cutoff24h) as { total: number; up: number | null; averageResponseMs: number | null };
-    const monitor = { id: row.id, name: row.name, monitorType: row.monitorType, lastStatus: row.lastStatus,
-      lastCheckedAt: row.lastCheckedAt, intervalSeconds: row.intervalSeconds,
-      uptime24h: stats.total ? Math.round(((stats.up ?? 0) / stats.total) * 10000) / 100 : null,
-      averageResponseMs: stats.averageResponseMs === null ? null : Math.round(stats.averageResponseMs * 100) / 100,
-      heartbeats: beats };
+    const project=db.prepare("SELECT * FROM projects WHERE id=?").get(row.id) as ProjectRow;
+    const stats=publicMonitorStatistics(project);
+    const monitor={id:row.id,name:row.name,monitorType:row.monitorType,lastStatus:row.lastStatus,lastCheckedAt:row.lastCheckedAt,intervalSeconds:row.intervalSeconds,...stats,averageResponseMs:stats.averageResponse24hMs,heartbeats:beats};
     if (!groups.has(row.groupName)) groups.set(row.groupName, []);
     groups.get(row.groupName)?.push(monitor);
   }
@@ -470,7 +460,7 @@ app.get("/api/share/:token", async (request, reply) => {
 
 app.get("/api/auth/oidc/providers",async()=>db.prepare("SELECT id,name,preset FROM oidc_providers WHERE enabled=1 ORDER BY name").all());
 app.get("/api/auth/oidc/:id/start",{config:{rateLimit:{max:20,timeWindow:"5 minutes"}}},async(request,reply)=>{const provider=oidcProvider(Number((request.params as {id:string}).id));if(!provider?.enabled)return reply.code(404).send({error:"SSO provider not found"});try{const redirectUri=`${requestOrigin(request)}/api/auth/oidc/${provider.id}/callback`;return reply.redirect((await authorizationUrl(provider,decrypt(provider.encryptedClientSecret),redirectUri)).href)}catch(error){request.log.error(error);return reply.redirect(`/?sso_error=${encodeURIComponent("Unable to contact identity provider")}`)}});
-app.get("/api/auth/oidc/:id/callback",{config:{rateLimit:{max:30,timeWindow:"5 minutes"}}},async(request,reply)=>{const provider=oidcProvider(Number((request.params as {id:string}).id));const query=request.query as Record<string,string|undefined>,pending=query.state?consumeState(query.state):null;if(!provider?.enabled||!pending||pending.providerId!==provider.id)return reply.redirect(`/?sso_error=${encodeURIComponent("SSO request expired or was not initiated here")}`);try{const configuration=await oidcConfiguration(provider,decrypt(provider.encryptedClientSecret));const current=new URL(request.raw.url??"",requestOrigin(request));const tokens=await oidcClient.authorizationCodeGrant(configuration,current,{pkceCodeVerifier:pending.verifier,expectedState:query.state,expectedNonce:pending.nonce,idTokenExpected:true});const claims=tokens.claims();if(!claims?.sub)throw new Error("Identity token has no subject");const usernameValue=claims[provider.usernameClaim],username=typeof usernameValue==="string"?usernameValue.trim():"";if(!username||!allowedEmail(username,provider.allowedDomains))return reply.redirect(`/?sso_error=${encodeURIComponent("This identity is not allowed")}`);let user=db.prepare("SELECT id,enabled FROM users WHERE oidc_provider_id=? AND external_subject=?").get(provider.id,claims.sub) as {id:number;enabled:number}|undefined;if(!user){if(!provider.jitProvisioning)return reply.redirect(`/?sso_error=${encodeURIComponent("Account is not provisioned")}`);const role=chooseRole(claims[provider.groupsClaim],provider.roleMapping,provider.defaultRole);let unique=username;for(let n=1;db.prepare("SELECT 1 FROM users WHERE username=?").get(unique);n++)unique=`${username}#${n}`;const unusable=await argon2.hash(randomBytes(48),{type:argon2.argon2id});const result=db.prepare("INSERT INTO users(username,password_hash,role,auth_source,oidc_provider_id,external_subject,updated_at) VALUES(?,?,?,?,?,?,?)").run(unique,unusable,role,"OIDC",provider.id,claims.sub,new Date().toISOString());user={id:Number(result.lastInsertRowid),enabled:1};appendAuditEvent(user.id,"OIDC_USER_PROVISIONED","user",user.id,{providerId:provider.id,role})}if(!user.enabled)return reply.redirect(`/?sso_error=${encodeURIComponent("Account is disabled")}`);const now=new Date().toISOString();db.prepare("UPDATE users SET last_login_at=?,updated_at=? WHERE id=?").run(now,now,user.id);setSessionCookie(reply,createSession(user.id));appendAuditEvent(user.id,"USER_LOGIN_OIDC","user",user.id,{providerId:provider.id});return reply.redirect("/")}catch(error){request.log.error(error);return reply.redirect(`/?sso_error=${encodeURIComponent("Identity provider rejected the sign-in")}`)}});
+app.get("/api/auth/oidc/:id/callback",{config:{rateLimit:{max:30,timeWindow:"5 minutes"}}},async(request,reply)=>{const provider=oidcProvider(Number((request.params as {id:string}).id));const query=request.query as Record<string,string|undefined>,pending=query.state?consumeState(query.state):null;if(!provider?.enabled||!pending||pending.providerId!==provider.id)return reply.redirect(`/?sso_error=${encodeURIComponent("SSO request expired or was not initiated here")}`);try{const configuration=await oidcConfiguration(provider,decrypt(provider.encryptedClientSecret));const current=new URL(request.raw.url??"",requestOrigin(request));const tokens=await oidcClient.authorizationCodeGrant(configuration,current,{pkceCodeVerifier:pending.verifier,expectedState:query.state,expectedNonce:pending.nonce,idTokenExpected:true});const claims=tokens.claims();if(!claims?.sub)throw new Error("Identity token has no subject");const usernameValue=claims[provider.usernameClaim],username=typeof usernameValue==="string"?usernameValue.trim():"";if(!username||!allowedEmail(username,provider.allowedDomains))return reply.redirect(`/?sso_error=${encodeURIComponent("This identity is not allowed")}`);let user=db.prepare("SELECT id,enabled FROM users WHERE oidc_provider_id=? AND external_subject=?").get(provider.id,claims.sub) as {id:number;enabled:number}|undefined;if(!user){if(!provider.jitProvisioning)return reply.redirect(`/?sso_error=${encodeURIComponent("Account is not provisioned")}`);const role=chooseRole(claims[provider.groupsClaim],provider.roleMapping,provider.defaultRole);let unique=username;for(let n=1;db.prepare("SELECT 1 FROM users WHERE username=?").get(unique);n++)unique=`${username}#${n}`;const unusable=await argon2.hash(randomBytes(48),{type:argon2.argon2id});const result=db.prepare("INSERT INTO users(username,password_hash,role,auth_source,oidc_provider_id,external_subject,updated_at,locale) VALUES(?,?,?,?,?,?,?,?)").run(unique,unusable,role,"OIDC",provider.id,claims.sub,new Date().toISOString(),systemRegional().locale);user={id:Number(result.lastInsertRowid),enabled:1};appendAuditEvent(user.id,"OIDC_USER_PROVISIONED","user",user.id,{providerId:provider.id,role})}if(!user.enabled)return reply.redirect(`/?sso_error=${encodeURIComponent("Account is disabled")}`);const now=new Date().toISOString();db.prepare("UPDATE users SET last_login_at=?,updated_at=? WHERE id=?").run(now,now,user.id);setSessionCookie(reply,createSession(user.id));appendAuditEvent(user.id,"USER_LOGIN_OIDC","user",user.id,{providerId:provider.id});return reply.redirect("/")}catch(error){request.log.error(error);return reply.redirect(`/?sso_error=${encodeURIComponent("Identity provider rejected the sign-in")}`)}});
 
 app.get("/api/oidc/providers",{preHandler:requireAuth},async(request,reply)=>{if(currentUser(request)?.role!=="ADMIN")return reply.code(403).send({error:"Administrator role required"});return db.prepare(`SELECT id,name,preset,issuer_url AS issuerUrl,client_id AS clientId,scopes,username_claim AS usernameClaim,groups_claim AS groupsClaim,allowed_domains_json AS allowedDomains,role_mapping_json AS roleMapping,default_role AS defaultRole,jit_provisioning AS jitProvisioning,enabled,created_at AS createdAt,updated_at AS updatedAt FROM oidc_providers ORDER BY name`).all().map((row:any)=>({...row,allowedDomains:JSON.parse(row.allowedDomains),roleMapping:JSON.parse(row.roleMapping),jitProvisioning:Boolean(row.jitProvisioning),enabled:Boolean(row.enabled),clientSecretConfigured:true}))});
 app.post("/api/oidc/providers",{preHandler:requireAuth},async(request,reply)=>{const admin=currentUser(request);if(admin?.role!=="ADMIN")return reply.code(403).send({error:"Administrator role required"});const body=parse(oidcProviderSchema,request.body,reply);if(!body)return;try{const candidate={id:0,...body,encryptedClientSecret:""} as OidcProvider;await oidcConfiguration(candidate,body.clientSecret)}catch{return reply.code(400).send({error:"OIDC discovery failed. Verify the issuer URL, client ID, and network access."})}const result=db.prepare(`INSERT INTO oidc_providers(name,preset,issuer_url,client_id,encrypted_client_secret,scopes,username_claim,groups_claim,allowed_domains_json,role_mapping_json,default_role,jit_provisioning,enabled) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(body.name,body.preset,body.issuerUrl.replace(/\/$/,""),body.clientId,encrypt(body.clientSecret),body.scopes,body.usernameClaim,body.groupsClaim,JSON.stringify(body.allowedDomains),JSON.stringify(body.roleMapping),body.defaultRole,Number(body.jitProvisioning),Number(body.enabled));const id=Number(result.lastInsertRowid);appendAuditEvent(admin.id,"OIDC_PROVIDER_CREATED","oidc_provider",id,{name:body.name,preset:body.preset,issuerUrl:body.issuerUrl,defaultRole:body.defaultRole});return reply.code(201).send({id,callbackUrl:`${requestOrigin(request)}/api/auth/oidc/${id}/callback`})});
@@ -486,7 +476,7 @@ app.post("/api/setup", { config: { rateLimit: { max: 5, timeWindow: "1 minute" }
   const body = parse(credentialsSchema, request.body, reply);
   if (!body) return;
   const hash = await argon2.hash(body.password, { type: argon2.argon2id });
-  const result = db.prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)").run(body.username, hash);
+  const result = db.prepare("INSERT INTO users (username, password_hash,locale) VALUES (?, ?,?)").run(body.username, hash,systemRegional().locale);
   setSessionCookie(reply, createSession(Number(result.lastInsertRowid)));
   return { ok: true };
 });
@@ -522,7 +512,7 @@ app.get("/api/users",{preHandler:requireAuth},async(request,reply)=>{
 });
 app.post("/api/users",{preHandler:requireAuth},async(request,reply)=>{
   const body=parse(userCreateSchema,request.body,reply);if(!body)return;const hash=await argon2.hash(body.password,{type:argon2.argon2id});
-  try{const result=db.prepare("INSERT INTO users(username,password_hash,role,updated_at) VALUES(?,?,?,?)").run(body.username,hash,body.role,new Date().toISOString());const id=Number(result.lastInsertRowid);appendAuditEvent(actor(request),"USER_CREATED","user",id,{username:body.username,role:body.role});return reply.code(201).send({id});}
+  try{const result=db.prepare("INSERT INTO users(username,password_hash,role,updated_at,locale) VALUES(?,?,?,?,?)").run(body.username,hash,body.role,new Date().toISOString(),systemRegional().locale);const id=Number(result.lastInsertRowid);appendAuditEvent(actor(request),"USER_CREATED","user",id,{username:body.username,role:body.role});return reply.code(201).send({id});}
   catch{return reply.code(409).send({error:"Username already exists"})}
 });
 app.put("/api/users/:id",{preHandler:requireAuth},async(request,reply)=>{
@@ -586,6 +576,8 @@ app.patch("/api/projects/:id", { preHandler: requireAuth }, async (request, repl
       body.dnsRecordType ?? current.dns_record_type, body.sslPort ?? current.ssl_port,
       body.sslExpiryDays ?? current.ssl_expiry_days, body.dockerContainer ?? current.docker_container,
       (body.published ?? Boolean(current.published)) ? 1 : 0,body.databaseEngine??current.database_engine, (body.ignoreTlsErrors ?? Boolean(current.ignore_tls_errors)) ? 1 : 0, id);
+  const updated=db.prepare("SELECT * FROM projects WHERE id=?").get(id) as ProjectRow;
+  if(updated.monitor_type!==current.monitor_type||updated.target!==current.target||updated.supabase_url!==current.supabase_url||updated.ssl_port!==current.ssl_port)db.prepare("UPDATE projects SET tls_expires_at=NULL,tls_checked_at=NULL,tls_valid=NULL,tls_error=NULL WHERE id=?").run(id);
   appendAuditEvent(actor(request),"MONITOR_UPDATED","project",id,{monitorType:body.monitorType??current.monitor_type,databaseEngine:body.databaseEngine??current.database_engine,credentialsReplaced:Boolean(body.connectionString||body.publishableKey),previousIgnoreTlsErrors:Boolean(current.ignore_tls_errors),ignoreTlsErrors:body.ignoreTlsErrors??Boolean(current.ignore_tls_errors)});
   return publicProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow);
 });
@@ -622,25 +614,7 @@ app.get("/api/projects/:id/stats", { preHandler: requireAuth }, async (request, 
   const id = Number((request.params as { id: string }).id);
   const project = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
   if (!project) return reply.code(404).send({ error: "Project not found" });
-  const now = Date.now();
-  const cutoff24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
-  const cutoff30d = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const aggregate = (cutoff: string) => db.prepare(`SELECT COUNT(*) AS total,
-    SUM(CASE WHEN status = 'UP' THEN 1 ELSE 0 END) AS up,
-    AVG(CASE WHEN status = 'UP' THEN response_time_ms END) AS averageResponseMs,
-    MIN(response_time_ms) AS minResponseMs, MAX(response_time_ms) AS maxResponseMs
-    FROM heartbeats WHERE project_id = ? AND checked_at >= ?`).get(id, cutoff) as {
-      total: number; up: number | null; averageResponseMs: number | null; minResponseMs: number | null; maxResponseMs: number | null;
-    };
-  const day = aggregate(cutoff24h);
-  const month = aggregate(cutoff30d);
-  const percent = (value: { total: number; up: number | null }) => value.total ? Math.round(((value.up ?? 0) / value.total) * 10000) / 100 : null;
-  return {
-    currentResponseMs: project.last_checked_at ? (db.prepare("SELECT response_time_ms FROM heartbeats WHERE project_id = ? ORDER BY checked_at DESC LIMIT 1").get(id) as { response_time_ms?: number } | undefined)?.response_time_ms ?? null : null,
-    averageResponse24hMs: day.averageResponseMs === null ? null : Math.round(day.averageResponseMs * 100) / 100,
-    uptime24h: percent(day), uptime30d: percent(month), checks24h: day.total, checks30d: month.total,
-    minResponse24hMs: day.minResponseMs, maxResponse24hMs: day.maxResponseMs
-  };
+  return monitorStatistics(project);
 });
 
 app.get("/api/dashboard/summary", { preHandler: requireAuth }, async () => {

@@ -12,6 +12,7 @@ import { dispatchNotifications } from "./notifications.js";
 import { appendAuditEvent } from "./audit.js";
 import { probeDatabase, type DatabaseMetrics } from "./database-monitor.js";
 import { wsStatus } from "./ws-watcher.js";
+import { certificateTarget, inspectCertificate } from "./certificates.js";
 
 export type MonitorStatus =
   | "UP"
@@ -261,15 +262,19 @@ export async function checkProject(projectId: number): Promise<CheckResult> {
   activeChecks.add(projectId);
   let result: CheckResult = { status: "DOWN", httpStatus: null, responseTimeMs: 0, message: "Not checked", attempt: 0 };
   try {
+    const tlsTarget=certificateTarget(project);
+    const certificatePromise=tlsTarget ? inspectCertificate(tlsTarget,Math.min(project.timeout_seconds*1000,10000)) : Promise.resolve(null);
     for (let attempt = 1; attempt <= project.retry_count + 1; attempt += 1) {
       result = await attemptCheck(project, attempt);
       if (result.status !== "DOWN") break;
       if (attempt <= project.retry_count) await new Promise((resolve) => setTimeout(resolve, attempt * 500));
     }
+    const certificate=await certificatePromise;
     const now = new Date();
     const next = new Date(now.getTime() + project.interval_seconds * 1000);
     const previousStatus = project.last_status;
     const transaction = db.transaction(() => {
+      db.prepare("UPDATE projects SET tls_expires_at=?,tls_checked_at=?,tls_valid=?,tls_error=? WHERE id=? AND monitor_type=? AND COALESCE(target,'')=? AND ssl_port=? AND supabase_url=?").run(certificate?.expiresAt??null,certificate?now.toISOString():null,certificate?Number(certificate.valid):null,certificate?.error??null,project.id,project.monitor_type,project.target??"",project.ssl_port,project.supabase_url);
       db.prepare(`INSERT INTO heartbeats
         (project_id, status, http_status, response_time_ms, attempt, error_message, checked_at, metric_value, loss_percent)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)

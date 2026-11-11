@@ -1,0 +1,26 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { expect, it } from "vitest";
+process.env.SUPAPULSE_DATA_DIR=mkdtempSync(join(tmpdir(),"byakugan-stats-"));
+const {db}=await import("./database.js");
+const {monitorStatistics}=await import("./monitor-statistics.js");
+import type {ProjectRow} from "./database.js";
+it("keeps response, sampled uptime and exact certificate expiry as separate measurements",()=>{
+  const now=Date.parse("2026-11-11T00:00:00Z");
+  const id=Number(db.prepare("INSERT INTO projects(name,supabase_url,encrypted_key,monitor_type,target,last_checked_at,tls_expires_at,tls_checked_at,tls_valid) VALUES('web','unused','unused','HTTP','https://example.test',?,'2026-11-22T00:00:00.000Z',?,1)").run(new Date(now).toISOString(),new Date(now).toISOString()).lastInsertRowid);
+  const insert=db.prepare("INSERT INTO heartbeats(project_id,status,response_time_ms,attempt,checked_at) VALUES(?,?,?,1,?)");
+  for(const[status,ms]of[["UP",45],["UP",65],["DOWN",0],["UP",58]]as const)insert.run(id,status,ms,"2026-11-10T23:00:00.000Z");
+  insert.run(id,"UP",100,"2026-11-01T00:00:00.000Z");
+  insert.run(id,"UP",999,"2026-11-12T00:00:00.000Z");
+  const project=db.prepare("SELECT * FROM projects WHERE id=?").get(id)as ProjectRow;
+  const stats=monitorStatistics(project,now);
+  expect(stats.averageResponse24hMs).toBe(56);
+  expect(stats.currentResponseMs).toBe(58);
+  expect(stats.uptime24h).toBe(75);
+  expect(stats.uptime30d).toBe(80);
+  expect(stats.checks24h).toBe(4);
+  expect(stats.checks30d).toBe(5);
+  expect(stats.certificate.daysRemaining).toBe(11);
+  expect(stats.certificate.expiresAt).toBe("2026-11-22T00:00:00.000Z");
+});

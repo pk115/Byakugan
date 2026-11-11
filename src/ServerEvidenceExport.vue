@@ -3,9 +3,9 @@ import { computed, ref } from "vue";
 import { locale } from "./i18n";
 import AppIcon from "./AppIcon.vue";
 const props = defineProps<{ agents: {id:number;name:string;hostname:string|null}[]; projects: {id:number;name:string}[]; from: string; to: string }>();
-const th = computed(() => locale.value === "th-TH"), scope = ref("all"), busy = ref(false), error = ref(""), result = ref("");
+const th = computed(() => locale.value === "th-TH"), scope = ref("all"), busy = ref(false), error = ref(""), checksum = ref("");
 async function download() {
-  busy.value = true; error.value = ""; result.value = "";
+  busy.value = true; error.value = ""; checksum.value = "";
   try {
     const from = new Date(`${props.from}T00:00:00.000Z`).toISOString(), to = new Date(`${props.to}T23:59:59.999Z`).toISOString();
     if (from > to) throw new Error(th.value ? "วันเริ่มต้นต้องไม่เกินวันสิ้นสุด" : "Start must not be after end");
@@ -14,7 +14,7 @@ async function download() {
     const blob = await response.blob(), url = URL.createObjectURL(blob), link = document.createElement("a");
     link.href = url; link.download = `byakugan-server-evidence-${scope.value.replace(":","-")}-${props.from}.xlsx`;
     document.body.appendChild(link); link.click(); link.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 60000);
-    result.value = `${th.value ? 'สร้างไฟล์แล้ว SHA-256' : 'Workbook created. SHA-256'}: ${response.headers.get("X-Content-SHA256") ?? "—"}`;
+    checksum.value = response.headers.get("X-Content-SHA256") ?? "—";
   } catch (e) { error.value = e instanceof Error ? e.message : String(e); }
   finally { busy.value = false; }
 }
@@ -22,10 +22,10 @@ async function download() {
 <template>
   <section class="server-evidence-export">
     <h3>{{ th ? 'Export หลักฐานเซิร์ฟเวอร์ — Excel ไฟล์เดียว' : 'Server evidence — one Excel workbook' }}</h3>
-    <p>{{ th ? 'แยกชีทตามเรื่อง พร้อมสรุปจำนวนและสิ่งที่ยังขาด ใช้ช่วงวันที่ออดิตด้านบนตั้งแต่ 00:00 ถึง 23:59 UTC ข้อมูลสถานะปัจจุบันจะแยกระบุว่าเป็นค่าขณะ Export' : 'Separate topic sheets with counts and evidence gaps. Uses the audit dates above, 00:00–23:59 UTC. Current-state sheets are explicitly marked as-of export.' }}</p>
+    <p>{{ th ? 'แยกชีทตามเรื่อง พร้อมสรุปจำนวนและสิ่งที่ยังขาด ใช้ช่วงวันที่ออดิทด้านบนตั้งแต่ 00:00 ถึง 23:59 UTC ข้อมูลสถานะปัจจุบันจะแยกระบุว่าเป็นค่าขณะ Export' : 'Separate topic sheets with counts and evidence gaps. Uses the audit dates above, 00:00–23:59 UTC. Current-state sheets are explicitly marked as-of export.' }}</p>
     <div class="evidence-export-controls">
       <label>{{ th ? 'ขอบเขตข้อมูล' : 'Evidence scope' }}
-        <select v-model="scope" :disabled="busy" @change="result=''; error=''">
+        <select v-model="scope" :disabled="busy" @change="checksum=''; error=''">
           <option value="all">{{ th ? 'ทั้งหมด — ทุกเซิร์ฟเวอร์และ Monitor' : 'All servers and monitors' }}</option>
           <optgroup :label="th ? 'เซิร์ฟเวอร์ที่ติดตั้ง Agent' : 'Agent servers'"><option v-for="agent in agents" :key="agent.id" :value="`agent:${agent.id}`">{{ agent.hostname || agent.name }} · #{{ agent.id }}</option></optgroup>
           <optgroup :label="th ? 'Monitor บริการหรือฐานข้อมูล' : 'Service or database monitors'"><option v-for="project in projects" :key="project.id" :value="`project:${project.id}`">{{ project.name }} · #{{ project.id }}</option></optgroup>
@@ -35,7 +35,7 @@ async function download() {
     </div>
     <p class="workflow-note">{{ th ? 'มีข้อมูล ≠ ผ่าน ISO: ต้องตรวจ SoA ความเสี่ยง และเอกสารกระบวนการเพิ่ม เลือกรายเครื่องจะไม่เดาการเชื่อม Backup/Restore หรือ Monitor จากชื่อ จึงอาจมีชีท NOT_LINKED_TO_SCOPE ให้ตรวจในชีทความครอบคลุม หากข้อมูลมากเกินจะขอให้ลดช่วงเวลา โดยไม่ตัดข้อมูลเงียบ ๆ' : 'Evidence presence is not ISO conformity. Review the SoA, risks and process records separately. Individual scope does not guess backup/restore or monitor-to-host links from names; check NOT_LINKED_TO_SCOPE in Coverage. Oversized exports fail explicitly; no silent row truncation.' }}</p>
     <p v-if="error" class="error-banner" role="alert">{{ error }}</p>
-    <p v-if="result" class="evidence-export-result" role="status">{{ result }}</p>
+    <p v-if="checksum" class="evidence-export-result" role="status">{{ th ? 'สร้างไฟล์แล้ว SHA-256' : 'Workbook created. SHA-256' }}: {{ checksum }}</p>
   </section>
 </template>
 <style scoped>

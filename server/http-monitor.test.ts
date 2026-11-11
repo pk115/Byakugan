@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createServer } from "node:https";
 import { once } from "node:events";
 import { expect, it } from "vitest";
+import { X509Certificate } from "node:crypto";
 
 process.env.SUPAPULSE_DATA_DIR = mkdtempSync(join(tmpdir(), "byakugan-http-"));
 const { db } = await import("./database.js");
@@ -28,6 +29,12 @@ it("only skips certificate verification for the selected HTTP monitor, including
     expect((await checkProject(id)).status).toBe("DOWN");
     db.prepare("UPDATE projects SET ignore_tls_errors=1 WHERE id=?").run(id);
     expect((await checkProject(id)).status).toBe("UP");
+    const certificate=db.prepare("SELECT tls_expires_at,tls_checked_at,tls_valid,tls_error FROM projects WHERE id=?").get(id) as {tls_expires_at:string;tls_checked_at:string;tls_valid:number;tls_error:string};
+    expect(Number.isFinite(Date.parse(certificate.tls_expires_at))).toBe(true);
+    expect(certificate.tls_expires_at).toBe(new Date(new X509Certificate(readFileSync(new URL("./fixtures/localhost-test-cert.pem",import.meta.url))).validTo).toISOString());
+    expect(certificate.tls_checked_at).toBeTruthy();
+    expect(certificate.tls_valid).toBe(0); // Skipping the service check never makes an invalid certificate trusted.
+    expect(certificate.tls_error).toMatch(/self.signed|certificate/i);
     db.prepare("UPDATE projects SET keyword='missing' WHERE id=?").run(id);
     expect((await checkProject(id)).message).toContain("keyword");
     db.prepare("UPDATE projects SET ignore_tls_errors=0 WHERE id=?").run(id);

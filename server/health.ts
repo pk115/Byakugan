@@ -93,10 +93,11 @@ function diskCSubjects(): Subject[] {
 }
 
 function sslSubjects(): Subject[] {
-  const rows = db.prepare(`SELECT p.id,p.name,p.interval_seconds AS interval,h.metric_value AS days,h.checked_at AS at FROM projects p
-    JOIN heartbeats h ON h.id=(SELECT id FROM heartbeats WHERE project_id=p.id AND metric_value IS NOT NULL ORDER BY checked_at DESC LIMIT 1)
-    WHERE p.monitor_type='SSL' AND p.enabled=1`).all() as Array<{ id: number; name: string; interval: number; days: number; at: string }>;
-  return rows.map((r) => ({ key: `project:${r.id}`, label: r.name, value: r.days, observedAt: r.at, staleMs: Math.max(STALE_MS, r.interval * 2000) }));
+  const rows=db.prepare(`SELECT p.id,p.name,p.interval_seconds AS interval,p.tls_expires_at AS expiresAt,p.tls_checked_at AS at,p.tls_valid AS valid,p.tls_error AS error,
+    (SELECT metric_value FROM heartbeats WHERE project_id=p.id AND metric_value IS NOT NULL ORDER BY checked_at DESC LIMIT 1) AS legacyDays,
+    (SELECT checked_at FROM heartbeats WHERE project_id=p.id AND metric_value IS NOT NULL ORDER BY checked_at DESC LIMIT 1) AS legacyAt
+    FROM projects p WHERE p.enabled=1 AND (p.monitor_type='SSL' OR p.tls_checked_at IS NOT NULL)`).all() as Array<{id:number;name:string;interval:number;expiresAt:string|null;at:string|null;valid:number|null;error:string|null;legacyDays:number|null;legacyAt:string|null}>;
+  return rows.map(r=>({key:`project:${r.id}`,label:r.name,value:r.expiresAt?Math.floor((Date.parse(r.expiresAt)-Date.now())/86400000):r.at?null:r.legacyDays,observedAt:r.at??r.legacyAt,staleMs:Math.max(STALE_MS,r.interval*2000),...(r.at&&r.valid===0&&r.expiresAt?{forceLevel:"CRITICAL" as Level,detail:r.error??"Certificate validation failed"}:{})}));
 }
 
 // ponytail: calendar month in UTC, counted by check results (not wall-clock downtime); needs 20+ checks before it judges.

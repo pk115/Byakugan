@@ -31,6 +31,7 @@ try {
   assert.ok(ready,"Server did not become ready");
   const setup=await request("/api/setup","POST",{username:"testadmin",password:"LocalOperationsTest123!"});
   assert.equal(setup.status,200);cookie=setup.headers.get("set-cookie").split(";")[0];
+  assert.equal((await ok("/api/session")).user.locale,"th-TH","New accounts must use the configured system default");
   const agent=await ok("/api/agents","POST",{name:"test-windows"});
   const payload={hostname:"WIN-TEST",agentVersion:"test",observedAt:new Date().toISOString(),inventory:{osName:"Windows",architecture:"x64",cpuModel:"fixture",cpuCount:1,totalMemoryBytes:1024,securityUpdateCount:2},metrics:{cpuPercent:1,memoryPercent:1,uptimeSeconds:100,disks:[],containers:[]}};
   const ingest=()=>ok("/api/agent/ingest","POST",{...payload,observedAt:new Date().toISOString()},{Authorization:`Bearer ${agent.token}`});
@@ -84,6 +85,26 @@ try {
   assert.equal(db.prepare("SELECT COUNT(*) n FROM audit_events WHERE action='SERVER_EVIDENCE_EXPORTED'").get().n,2);
   console.log("PASS scoped Excel exports, response checksum and export audit trail");
   console.log("PASS Check now performs a real HTTP probe and evaluates health");
+  const expiry=new Date(Date.now()+11.5*86400000).toISOString();
+  const certProject=Number(db.prepare("INSERT INTO projects(name,supabase_url,encrypted_key,monitor_type,target,enabled,published,tls_expires_at,tls_checked_at,tls_valid) VALUES('certificate fixture','unused','unused','HTTP','https://example.test',0,1,?,?,1)").run(expiry,new Date().toISOString()).lastInsertRowid);
+  const certStats=await ok(`/api/projects/${certProject}/stats`);
+  assert.equal(certStats.certificate.expiresAt,expiry);
+  assert.equal(certStats.certificate.daysRemaining,11);
+  const published=(await ok("/api/public/status")).monitors.find(row=>row.id===certProject);
+  assert.equal(published.certificate.expiresAt,expiry);
+  assert.equal(published.target,undefined,"Public status must not expose private monitor targets");
+  assert.equal(published.supabaseUrl,undefined);
+  assert.equal(published.checks24h,0);
+  assert.equal(published.uptime24h,null,"No samples must never display 100% uptime");
+  await ok(`/api/projects/${certProject}`,"PATCH",{target:"http://example.test"});
+  assert.equal((await ok(`/api/projects/${certProject}/stats`)).certificate.expiresAt,null,"Target changes must invalidate cached certificates");
+  // Language preference persists in the same user record used by session, settings and report generation.
+  for (const value of ["th-TH","en-US"]) {
+    await ok("/api/settings/preferences","PUT",{locale:value,timezone:"Asia/Bangkok"});
+    assert.equal((await ok("/api/session")).user.locale,value);
+    assert.equal((await ok("/api/settings/regional")).userLocale,value);
+  }
+  console.log("PASS real expiry metadata on private/public views, cache invalidation and persistent language round trip");
   const old="2020-01-01T00:00:00.000Z";
   const oldBeat=Number(db.prepare("INSERT INTO heartbeats(project_id,status,response_time_ms,attempt,checked_at) VALUES(?,'UP',1,1,?)").run(project.id,old).lastInsertRowid);
   const latestBeat=Number(db.prepare("INSERT INTO heartbeats(project_id,status,response_time_ms,attempt,checked_at) VALUES(?,'UP',1,1,?)").run(project.id,new Date().toISOString()).lastInsertRowid);
@@ -155,6 +176,9 @@ try {
   await ok("/api/users","POST",{username:"testviewer",password:"LocalViewerTest123!",role:"VIEWER"});
   const viewer=await request("/api/auth/login","POST",{username:"testviewer",password:"LocalViewerTest123!"});
   cookie=viewer.headers.get("set-cookie").split(";")[0];
+  await ok("/api/settings/preferences","PUT",{locale:"en-US",timezone:"SYSTEM"});
+  assert.equal((await ok("/api/session")).user.role,"VIEWER");
+  assert.equal((await ok("/api/session")).user.locale,"en-US","Read-only users may change only their own preferences");
   assert.equal((await request("/api/health/run","POST")).status,403);
   assert.equal((await request("/api/audit/report.servers.xlsx?scope=all")).status,403);
   assert.equal((await request("/api/settings/data/preview","POST",{categories:["logs"],olderThanDays:null})).status,403);

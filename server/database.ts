@@ -141,6 +141,10 @@ ensureColumn("incidents", "reviewed_by", "INTEGER");
 ensureColumn("incidents", "reviewed_at", "TEXT");
 ensureColumn("notifications", "help_desk", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("heartbeats", "metric_value", "REAL"); // SSL: days until expiry, PING: average latency (ms)
+ensureColumn("projects", "tls_expires_at", "TEXT");
+ensureColumn("projects", "tls_checked_at", "TEXT");
+ensureColumn("projects", "tls_valid", "INTEGER");
+ensureColumn("projects", "tls_error", "TEXT");
 ensureColumn("heartbeats", "loss_percent", "REAL"); // PING packet loss
 // Health Check incidents have no monitor: rebuild once so project_id can be NULL (nothing references incidents).
 if ((db.pragma("table_info(incidents)") as Array<{ name: string; notnull: number }>).find((c) => c.name === "project_id")?.notnull) {
@@ -623,6 +627,7 @@ export type ProjectRow = {
   threshold_operator: string;
   threshold_duration_seconds: number;
   database_engine: "POSTGRESQL"|"MYSQL"|"SQLSERVER"|"MONGODB"|null;
+  tls_expires_at: string|null; tls_checked_at:string|null; tls_valid:number|null; tls_error:string|null;
 };
 
 export function publicProject(row: ProjectRow) {
@@ -652,6 +657,7 @@ export function publicProject(row: ProjectRow) {
     ,dnsRecordType: row.dns_record_type
     ,sslPort: row.ssl_port
     ,sslExpiryDays: row.ssl_expiry_days
+    ,certificate: { expiresAt: row.tls_expires_at, checkedAt: row.tls_checked_at, valid: row.tls_valid === null ? null : Boolean(row.tls_valid), error: row.tls_error }
     ,dockerContainer: row.docker_container
     ,published: Boolean(row.published)
     ,assetTag: row.asset_tag
