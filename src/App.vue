@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { api } from "./api";
 import LogsView from "./LogsView.vue";
+import DataManagement from "./DataManagement.vue";
 import AppIcon from "./AppIcon.vue";
 import { locale, setLocale, t, type Locale } from "./i18n";
 
@@ -833,6 +834,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
       <template v-else>
         <header><div><h1>{{ t('settings.title') }}</h1><p>{{ t('settings.subtitle') }}</p></div></header>
         <div class="settings-grid">
+          <DataManagement v-if="isAdmin" />
           <section class="settings-card regional-card"><h2>{{ t('settings.regional') }}</h2><div class="form-grid"><label>{{ t('settings.language') }}<select v-model="regionalForm.userLocale"><option value="th-TH">ไทย</option><option value="en-US">English</option></select></label><label>{{ t('settings.userTimezone') }}<select v-model="regionalForm.userTimezone"><option value="SYSTEM">{{ t('settings.inherit') }}</option><option v-for="zone in regional?.supportedTimezones" :key="zone" :value="zone">{{ zone }}</option></select></label></div><dl><div><dt>{{ t('settings.browserTimezone') }}</dt><dd>{{ browserTimezone }}</dd></div><div><dt>{{ t('settings.serverTimezone') }}</dt><dd>{{ regional?.serverTimezone||'—' }}</dd></div><div><dt>{{ t('settings.serverTime') }}</dt><dd>{{ displayDate(regional?.serverNow||null) }}</dd></div></dl><button class="secondary" @click="savePreferences">{{ t('settings.savePreferences') }}</button><template v-if="isAdmin"><hr><div class="form-grid"><label>{{ t('settings.language') }}<select v-model="regionalForm.systemLocale"><option value="th-TH">ไทย</option><option value="en-US">English</option></select></label><label>{{ t('settings.systemTimezone') }}<select v-model="regionalForm.applicationTimezone"><option v-for="zone in regional?.supportedTimezones" :key="zone" :value="zone">{{ zone }}</option></select></label></div><button class="secondary" @click="saveRegionalDefaults">{{ t('settings.saveSystem') }}</button></template></section>
           <section class="settings-card"><h2>Application</h2><dl><div><dt>Version</dt><dd>2.3.0</dd></div><div><dt>Storage</dt><dd>Encrypted SQLite volume</dd></div><div><dt>Scheduler</dt><dd>Active</dd></div></dl></section>
           <section class="settings-card"><h2>Public status page</h2><p>Publish selected monitors at <a href="/status" target="_blank">/status <AppIcon name="external" /></a>.</p><label>Page title<input v-model="statusTitle" maxlength="100"></label><button class="secondary" @click="saveStatusSettings">Save status page</button></section>

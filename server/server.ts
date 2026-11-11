@@ -27,6 +27,7 @@ import { syncThreatIntelligence, threatIntelligenceStatus } from "./threat-intel
 import { evaluateLogAlerts, ingestLogs, logBatchSchema, logSummary, queryLogs } from "./log-events.js";
 import { healthHistory, healthRows, healthStatus, setExpectedLogSources, updatePolicy } from "./health.js";
 import { systemRegional } from "./localization.js";
+import { cleanupSchema, previewCleanup, executeCleanup } from "./data-management.js";
 
 const app = Fastify({ logger: { level: config.isProduction ? "info" : "warn" }, bodyLimit: 64 * 1024, trustProxy: (_address: string, hop: number) => hop < config.trustProxyHops }); // trust the first N hops; 0 trusts none
 await app.register(cookie);
@@ -216,6 +217,20 @@ app.addHook("onSend",async(request,reply,payload)=>{reply.header("X-Content-Type
 
 app.get("/health", async (_request,reply) => reply.header("Cache-Control","no-store").send({ status: "ok" }));
 app.get("/ready",async(_request,reply)=>{if(config.maintenanceMode)return reply.header("Cache-Control","no-store").header("Retry-After","300").code(503).send({status:"draining"});try{db.prepare("SELECT 1 AS ready FROM audit_events LIMIT 1").get();return reply.header("Cache-Control","no-store").send({status:"ready",database:"available"})}catch(error){app.log.error(error);return reply.header("Cache-Control","no-store").code(503).send({status:"not-ready"})}});
+app.post("/api/settings/data/preview", { preHandler: requireAuth }, async (request, reply) => {
+  const user = currentUser(request);
+  if (user?.role !== "ADMIN") return reply.code(403).send({ error: "Administrator role required" });
+  const body = parse(cleanupSchema, request.body, reply);
+  if (body) return previewCleanup(user.id, body);
+});
+app.post("/api/settings/data/cleanup", { preHandler: requireAuth, config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (request, reply) => {
+  const user = currentUser(request);
+  if (user?.role !== "ADMIN") return reply.code(403).send({ error: "Administrator role required" });
+  const body = parse(z.object({ previewId: z.string().uuid(), confirmation: z.literal("DELETE HISTORY") }), request.body, reply);
+  if (!body) return;
+  try { return await executeCleanup(user.id, body.previewId); }
+  catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : "Cleanup failed" }); }
+});
 app.get("/api/settings/regional",{preHandler:requireAuth},async(request)=>{const user=currentUser(request);const get=(key:string,fallback:string)=>(db.prepare("SELECT value FROM app_settings WHERE key=?").get(key) as {value?:string}|undefined)?.value??fallback;return{supportedLocales:["th-TH","en-US"],supportedTimezones:Intl.supportedValuesOf("timeZone"),systemLocale:get("system_locale","th-TH"),applicationTimezone:get("application_timezone","Asia/Bangkok"),serverTimezone:Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",serverNow:new Date().toISOString(),userLocale:user?.locale??"en-US",userTimezone:user?.timezone??"SYSTEM"}});
 app.put("/api/settings/preferences",{preHandler:requireAuth},async(request,reply)=>{const body=parse(preferencesSchema,request.body,reply);if(!body)return;const user=currentUser(request);if(!user)return reply.code(401).send({error:"Authentication required"});db.prepare("UPDATE users SET locale=?,timezone=?,updated_at=? WHERE id=?").run(body.locale,body.timezone,new Date().toISOString(),user.id);appendAuditEvent(user.id,"USER_REGIONAL_PREFERENCES_UPDATED","user",user.id,body);return body});
 app.put("/api/settings/regional",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(user?.role!=="ADMIN")return reply.code(403).send({error:"Administrator role required"});const body=parse(systemRegionalSchema,request.body,reply);if(!body)return;const save=db.prepare("INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP");db.transaction(()=>{save.run("system_locale",body.locale);save.run("application_timezone",body.timezone)})();appendAuditEvent(user.id,"SYSTEM_REGIONAL_SETTINGS_UPDATED","settings","regional",body);return body});
