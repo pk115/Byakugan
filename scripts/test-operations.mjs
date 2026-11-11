@@ -50,6 +50,13 @@ try {
   db.prepare("UPDATE projects SET next_check_at=? WHERE id=?").run(new Date(Date.now()+3600000).toISOString(),project.id);
   for(const flags of [{enabled:false},{maintenance:true}])await ok("/api/projects","POST",{name:"skipped-service",monitorType:"HTTP",target:`http://127.0.0.1:${target.address().port}`,timeoutSeconds:3,retryCount:0,...flags});
   const incident=Number(db.prepare("INSERT INTO incidents(project_id,status,started_at) VALUES(?,'DOWN',?)").run(project.id,new Date().toISOString()).lastInsertRowid);
+  const incidentEvidence=(await ok("/api/incidents")).find(row=>row.id===incident);
+  assert.equal(incidentEvidence.monitorType,"HTTP");
+  assert.equal(incidentEvidence.healthMetricKey,null);
+  const healthIncident=Number(db.prepare("INSERT INTO incidents(status,message,started_at,health_policy_no,source_label) VALUES('CRITICAL','Memory threshold exceeded',?,2,'RAM test')").run(new Date().toISOString()).lastInsertRowid);
+  const healthEvidence=(await ok("/api/incidents")).find(row=>row.id===healthIncident);
+  assert.equal(healthEvidence.healthMetricKey,"ram_percent");
+  assert.equal(healthEvidence.message,"Memory threshold exceeded");
   const review={severity:"MEDIUM",rootCause:"Test cause",correctiveAction:"Test correction",reviewStatus:"APPROVED"};
   assert.equal((await request(`/api/incidents/${incident}/review`,"PUT",{severity:"MEDIUM",reviewStatus:"APPROVED"})).status,400);
   assert.equal((await request(`/api/incidents/${incident}/review`,"PUT",{...review,reviewStatus:"PENDING",closeCase:true})).status,400);

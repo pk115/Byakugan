@@ -754,10 +754,10 @@ app.put("/api/projects/:id/notifications", { preHandler: requireAuth }, async (r
 });
 
 app.get("/api/incidents", { preHandler: requireAuth }, async () => {
-  return db.prepare(`SELECT i.id, i.project_id AS projectId, COALESCE(p.name, i.source_label) AS projectName, i.status,
+  return db.prepare(`SELECT i.id, i.project_id AS projectId, COALESCE(p.name, i.source_label) AS projectName, i.status,p.monitor_type AS monitorType,i.health_policy_no AS healthPolicyNo,hp.metric_key AS healthMetricKey,
     i.message,i.severity,i.owner,i.root_cause AS rootCause,i.corrective_action AS correctiveAction,i.lessons_learned AS lessonsLearned,
     i.review_status AS reviewStatus,i.reviewed_at AS reviewedAt,ru.username AS reviewedBy,i.started_at AS startedAt, i.resolved_at AS resolvedAt,i.closed_at AS closedAt
-    FROM incidents i LEFT JOIN projects p ON p.id = i.project_id LEFT JOIN users ru ON ru.id=i.reviewed_by ORDER BY i.started_at DESC LIMIT 200`).all();
+    FROM incidents i LEFT JOIN projects p ON p.id = i.project_id LEFT JOIN health_policies hp ON hp.no=i.health_policy_no LEFT JOIN users ru ON ru.id=i.reviewed_by ORDER BY i.started_at DESC LIMIT 200`).all();
 });
 app.put("/api/incidents/:id/review",{preHandler:requireAuth},async(request,reply)=>{
   const id=Number((request.params as {id:string}).id),body=parse(incidentReviewSchema,request.body,reply);if(!body)return;
