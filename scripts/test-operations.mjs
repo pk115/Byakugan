@@ -36,6 +36,13 @@ try {
   const payload={hostname:"WIN-TEST",agentVersion:"test",observedAt:new Date().toISOString(),inventory:{osName:"Windows",architecture:"x64",cpuModel:"fixture",cpuCount:1,totalMemoryBytes:1024,securityUpdateCount:2},metrics:{cpuPercent:1,memoryPercent:1,uptimeSeconds:100,disks:[],containers:[]}};
   const ingest=()=>ok("/api/agent/ingest","POST",{...payload,observedAt:new Date().toISOString()},{Authorization:`Bearer ${agent.token}`});
   await ingest();
+  const threatLog = {source:"host",event:"LOGIN_FAILED",timestamp:new Date().toISOString(),srcIp:"192.0.2.20",severity:"warning",details:{reason:"bad_password"}};
+  await ok("/api/agent/logs","POST",{events:[threatLog,{...threatLog,event:"HTTP_REQUEST",details:{status:500}}]},{Authorization:`Bearer ${agent.token}`});
+  const threats = await ok(`/api/logs?threatOnly=true&agentId=${agent.id}`);
+  assert.deepEqual(threats.events.map(row=>row.event),["LOGIN_FAILED"]);
+  assert.equal((await request("/api/logs?threatOnly=invalid")).status,400);
+  assert.equal((await request("/api/logs?threatOnly=true","GET",undefined,{Cookie:""})).status,401);
+  console.log("PASS Threat filter excludes HTTP errors, validates input and requires authentication");
   const finding=db.prepare("SELECT id FROM compliance_findings WHERE agent_id=? AND finding_key='security_updates'").get(agent.id);
   await ok(`/api/findings/${finding.id}`,"PUT",{status:"ACKNOWLEDGED",owner:"Operations"});
   await ingest();
@@ -176,6 +183,7 @@ try {
   await ok("/api/users","POST",{username:"testviewer",password:"LocalViewerTest123!",role:"VIEWER"});
   const viewer=await request("/api/auth/login","POST",{username:"testviewer",password:"LocalViewerTest123!"});
   cookie=viewer.headers.get("set-cookie").split(";")[0];
+  assert.equal((await request("/api/logs?threatOnly=true")).status,403);
   await ok("/api/settings/preferences","PUT",{locale:"en-US",timezone:"SYSTEM"});
   assert.equal((await ok("/api/session")).user.role,"VIEWER");
   assert.equal((await ok("/api/session")).user.locale,"en-US","Read-only users may change only their own preferences");

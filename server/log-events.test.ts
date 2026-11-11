@@ -30,6 +30,24 @@ describe("sample CSV mapping", () => {
 });
 
 describe("log ingestion", () => {
+  it("filters threat candidates before pagination without including routine errors or another agent", () => {
+    const id = Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('threat-test','threat-hash')").run().lastInsertRowid);
+    const timestamp = "2026-11-12T00:00:00.000Z";
+    const batch = ["LOGIN_FAILED", "FIREWALL_DENY", "HTTP_REQUEST", "LOGIN_SUCCESS", "SERVICE_STOP"].map(name => event({event:name,timestamp,severity:"error",srcIp:"192.0.2.1"}));
+    expect(logs.ingestLogs(id, batch).accepted).toBe(5);
+    expect(logs.ingestLogs(id, batch).duplicates).toBe(5);
+    const query = {agentId:id,threatOnly:"true" as const,from:timestamp,to:timestamp};
+    const all = logs.queryLogs(query) as Array<{id:number;event:string;occurredAt:string}>;
+    expect(all.map(row=>row.event)).toEqual(["FIREWALL_DENY", "LOGIN_FAILED"]);
+    const first = logs.queryLogs({...query,limit:1}) as typeof all;
+    const next = logs.queryLogs({...query,beforeTime:first[0].occurredAt,beforeId:first[0].id}) as typeof all;
+    expect(next.map(row=>row.id)).toEqual([all[1].id]);
+    expect(logs.queryLogs({...query,event:"HTTP_REQUEST"})).toHaveLength(0);
+    expect(logs.queryLogs({...query,srcIp:"192.0.2.2"})).toHaveLength(0);
+    expect(logs.queryLogs({...query,agentId})).toHaveLength(0);
+    expect(logs.queryLogs({agentId:id})).toHaveLength(5);
+    db.prepare("DELETE FROM agents WHERE id=?").run(id);
+  });
   it("keeps acknowledged alerts acknowledged and resolves them when the condition clears", () => {
     const id = Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('ack-test','ack-hash')").run().lastInsertRowid);
     logs.ingestLogs(id, Array.from({length:10},(_,i)=>event({actor:`ack-${i}`})));

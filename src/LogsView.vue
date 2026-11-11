@@ -2,10 +2,11 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { api } from "./api";
 import AppIcon from "./AppIcon.vue";
+import { threatGuidance } from "./threat-guidance";
 import { locale } from "./i18n";
 
 type LogEvent = { id:number; agentId:number; agent:string; source:string; event:string; host:string|null; actor:string|null; srcIp:string|null; result:string|null; severity:string; detailsJson:string; occurredAt:string; receivedAt:string };
-const props = defineProps<{ initialAgentId?:number; timezone:string }>();
+const props = defineProps<{ initialAgentId?:number; timezone:string; threats?:boolean }>();
 const agents = ref<Array<{id:number;name:string;hostname:string|null;osName:string|null}>>([]);
 const rows = ref<LogEvent[]>([]);
 const loading = ref(false), error = ref(""), searched = ref(false), more = ref(false);
@@ -18,15 +19,21 @@ const text = computed(() => locale.value === "th-TH" ? {
 } : {
   title:"Event logs", subtitle:"Search Windows, Linux and logs shipped by connected systems", refresh:"Refresh", search:"Search", searchHint:"Event, host, user, IP or details", machine:"Machine / Agent", all:"All", source:"Source", severity:"Severity", event:"Event", period:"Time range", day:"Last 24 hours", week:"Last 7 days", custom:"Custom", from:"From", to:"To", advanced:"More filters", actor:"User", ip:"Source IP", result:"Result", reset:"Reset filters", loading:"Loading…", shown:"Loaded events", latest:"Last refreshed", time:"Occurred at", detail:"Details", received:"Received at", more:"Load older events", end:"All matching events loaded", empty:"No matching events", emptyHint:"Try a wider time range or reset filters. For a new agent, wait about 60 seconds and refresh.", help:"No Windows logs yet?", helpBody:"The agent must be running with logs enabled and supported events available, such as logins or service state changes. Run this on Windows to inspect local events without uploading them.", validation:"Enter a valid start and end time, with the start before the end", hostHint:"host includes Windows/Linux; choose a machine to narrow the results", exact:"Event, user and IP filters match exact recorded values", failure:"Unable to load logs", retry:"Try again", detailsEmpty:"No additional details", moreHint:"Newest event time first, 100 events per request", noResults:"No search results", noAgents:"Unable to load machine names. Other log filters are still available.", filtered:"After changing filters, select Search to apply them", timezone:"Timezone"
 });
+const thai = computed(() => locale.value === "th-TH");
+const title = computed(() => props.threats ? (thai.value ? "ภัยคุกคาม" : "Threats") : text.value.title);
+const subtitle = computed(() => props.threats ? (thai.value ? "ตรวจสอบความล้มเหลวในการยืนยันตัวตนและการเชื่อมต่อที่ Firewall ปฏิเสธจาก Log จริง" : "Investigate authentication failures and firewall denials from collected logs") : text.value.subtitle);
+const guidance = (event:string) => threatGuidance(event, thai.value);
+const candidateEvents = ["LOGIN_FAILED","SSH_LOGIN_FAILED","SUDO_AUTH_FAILED","ROOT_LOGIN_DENIED","VPN_AUTH_FAILED","DB_AUTH_FAILED","FIREWALL_DENY"];
 const agentError = ref(false);
 const events = ["LOGIN_SUCCESS","LOGIN_FAILED","SSH_LOGIN_SUCCESS","SSH_LOGIN_FAILED","ROOT_LOGIN_DENIED","SUDO_COMMAND","SUDO_AUTH_FAILED","PRIVILEGE_ASSIGNED","USER_CREATED","GROUP_MEMBER_ADDED","SERVICE_START","SERVICE_STOP","SERVICE_RESTART","SERVICE_INSTALLED","BACKUP_COMPLETE","BACKUP_FAILED","DB_BACKUP_COMPLETE","DB_BACKUP_FAILED","HTTP_REQUEST","FIREWALL_DENY","VPN_AUTH_FAILED"];
 const sources = ["host","nginx","app-audit","db","firewall","vpn"];
 function date(value:string|null) {
-  return value ? new Intl.DateTimeFormat(locale.value,{dateStyle:"medium",timeStyle:"medium",timeZone:props.timezone}).format(new Date(value)) : "—";
+  return value ? new Intl.DateTimeFormat(locale.value,{dateStyle:"medium",timeStyle:"medium",timeZone:props.timezone,calendar:"gregory"}).format(new Date(value)) : "—";
 }
 function details(row:LogEvent) { try { return JSON.stringify(JSON.parse(row.detailsJson),null,2); } catch { return row.detailsJson; } }
 function query() {
   const q = new URLSearchParams({limit:"100"});
+  if (props.threats) q.set("threatOnly","true");
   for (const key of ["source","severity","event","search","actor","srcIp","result"] as const) {
     if (filters[key].trim()) q.set(key,filters[key].trim());
   }
@@ -65,7 +72,12 @@ onMounted(() => {
 
 <template>
   <section class="logs-view">
-    <header><div><h1>{{ text.title }}</h1><p>{{ text.subtitle }}</p></div><button class="secondary" :disabled="loading" @click="load()"><AppIcon name="refresh" /> {{ text.refresh }}</button></header>
+    <header><div><h1>{{ title }}</h1><p>{{ subtitle }}</p></div><button class="secondary" :disabled="loading" @click="load()"><AppIcon name="refresh" /> {{ text.refresh }}</button></header>
+    <aside v-if="threats" class="panel threat-notice">
+      <strong>{{ thai ? 'เหตุการณ์ที่ควรตรวจสอบ ไม่ใช่จำนวนการเจาะระบบสำเร็จ' : 'Investigation candidates, not confirmed compromises' }}</strong>
+      <p>{{ thai ? 'แสดงเฉพาะ Log ที่ระบบรับแล้ว การไม่พบรายการไม่ได้ยืนยันว่าปลอดภัยหรือเก็บข้อมูลครบ แหล่งข้อมูลที่ยังไม่เชื่อมต่อจะไม่ปรากฏในหน้านี้' : 'Only received logs are shown. No matching events does not establish safety or complete coverage. Disconnected log sources are not represented here.' }}</p>
+      <small>{{ thai ? 'จำนวนด้านล่างนับเฉพาะรายการที่โหลดแล้ว · กดรีเฟรชเพื่อรับข้อมูลใหม่ · รายละเอียดแสดงความเสี่ยงและสิ่งที่ควรตรวจสอบ' : 'The count below covers loaded rows only · Refresh to fetch new data · Expand an event for risk context and investigation steps' }}</small>
+    </aside>
     <form class="panel log-filters" @submit.prevent="load()">
       <div class="log-search"><label>{{ text.search }}<input v-model="filters.search" maxlength="200" :placeholder="text.searchHint"></label><button class="primary" :disabled="loading">{{ loading ? text.loading : text.search }}</button></div>
       <div class="log-filter-grid">
@@ -76,7 +88,7 @@ onMounted(() => {
       </div>
       <div v-if="filters.period==='custom'" class="log-filter-grid custom-period"><label>{{ text.from }}<input v-model="filters.from" type="datetime-local" required></label><label>{{ text.to }}<input v-model="filters.to" type="datetime-local" required></label><small>{{ locale==='th-TH'?'ช่วงเวลาที่กรอกใช้เขตเวลาของเบราว์เซอร์':'Date inputs use your browser timezone' }}: {{ Intl.DateTimeFormat().resolvedOptions().timeZone }}</small></div>
       <details class="log-advanced"><summary>{{ text.advanced }}</summary><div class="log-filter-grid">
-        <label>{{ text.event }}<input v-model="filters.event" list="log-event-list" maxlength="80" :placeholder="text.all"><datalist id="log-event-list"><option v-for="event in events" :key="event" :value="event" /></datalist></label>
+        <label>{{ text.event }}<input v-model="filters.event" list="log-event-list" maxlength="80" :placeholder="text.all"><datalist id="log-event-list"><option v-for="event in (threats ? candidateEvents : events)" :key="event" :value="event" /></datalist></label>
         <label>{{ text.actor }}<input v-model="filters.actor" maxlength="150" :placeholder="text.all"></label>
         <label>{{ text.ip }}<input v-model="filters.srcIp" maxlength="64" placeholder="192.0.2.10"></label>
         <label>{{ text.result }}<input v-model="filters.result" maxlength="40" placeholder="success / failed"></label>
@@ -89,9 +101,14 @@ onMounted(() => {
       <div class="log-results-head" aria-live="polite"><div><strong>{{ text.shown }}: {{ rows.length.toLocaleString(locale) }}</strong><small>{{ text.moreHint }} · {{ text.timezone }}: {{ timezone }}</small></div><small v-if="lastUpdated">{{ text.latest }}: {{ date(lastUpdated) }}</small></div>
       <div v-if="loading && !rows.length" class="empty" role="status">{{ text.loading }}</div>
       <div v-else-if="searched && !rows.length && !error" class="empty"><h2>{{ text.empty }}</h2><p>{{ text.emptyHint }}</p></div>
-      <div v-if="rows.length" class="log-table-scroll"><table class="log-table"><caption class="log-sr-only">{{ text.title }} — {{ text.moreHint }}</caption><thead><tr><th>{{ text.time }}</th><th>{{ text.severity }}</th><th>{{ text.event }}</th><th>{{ text.machine }}</th><th>{{ text.actor }} / {{ text.ip }}</th><th>{{ text.result }}</th><th>{{ text.detail }}</th></tr></thead><tbody>
-        <template v-for="row in rows" :key="row.id"><tr><td><time :datetime="row.occurredAt">{{ date(row.occurredAt) }}</time></td><td><span :class="['log-severity',row.severity]">{{ row.severity }}</span></td><td><strong>{{ row.event }}</strong><small>{{ row.source }}</small></td><td>{{ row.host||row.agent }}<small>{{ row.agent }}</small></td><td>{{ row.actor||'—' }}<small>{{ row.srcIp||'—' }}</small></td><td>{{ row.result||'—' }}</td><td><button class="secondary log-detail-button" :aria-expanded="expanded===row.id" :aria-controls="`log-detail-${row.id}`" @click="expanded=expanded===row.id?null:row.id"><AppIcon :name="expanded===row.id?'x':'plus'" /><span class="log-sr-only"> {{ text.detail }} #{{ row.id }}</span></button></td></tr>
-        <tr v-if="expanded===row.id" :id="`log-detail-${row.id}`" class="log-detail-row"><td colspan="7"><div class="log-event-details"><dl><div><dt>ID</dt><dd>#{{ row.id }}</dd></div><div><dt>{{ text.received }}</dt><dd>{{ date(row.receivedAt.endsWith('Z')||row.receivedAt.includes('T')?row.receivedAt:row.receivedAt.replace(' ','T')+'Z') }}</dd></div><div><dt>{{ text.machine }}</dt><dd>{{ row.agent }} (#{{ row.agentId }})</dd></div></dl><pre>{{ row.detailsJson==='{}'?text.detailsEmpty:details(row) }}</pre></div></td></tr></template>
+      <div v-if="rows.length" class="log-table-scroll"><table class="log-table"><caption class="log-sr-only">{{ title }} — {{ text.moreHint }}</caption><thead><tr><th>{{ text.time }}</th><th>{{ text.severity }}</th><th>{{ text.event }}</th><th>{{ text.machine }}</th><th>{{ text.actor }} / {{ text.ip }}</th><th>{{ text.result }}</th><th>{{ text.detail }}</th></tr></thead><tbody>
+        <template v-for="row in rows" :key="row.id"><tr><td><time :datetime="row.occurredAt">{{ date(row.occurredAt) }}</time></td><td><span :class="['log-severity',row.severity]">{{ row.severity }}</span></td><td><strong>{{ row.event }}</strong><small>{{ row.source }}</small><small v-if="threats">{{ guidance(row.event)?.title }}</small></td><td>{{ row.host||row.agent }}<small>{{ row.agent }}</small></td><td>{{ row.actor||'—' }}<small>{{ row.srcIp||'—' }}</small></td><td>{{ row.result||'—' }}</td><td><button class="secondary log-detail-button" :aria-expanded="expanded===row.id" :aria-controls="`log-detail-${row.id}`" @click="expanded=expanded===row.id?null:row.id"><AppIcon :name="expanded===row.id?'x':'plus'" /><span class="log-sr-only"> {{ text.detail }} #{{ row.id }}</span></button></td></tr>
+        <tr v-if="expanded===row.id" :id="`log-detail-${row.id}`" class="log-detail-row"><td colspan="7"><div class="log-event-details"><dl><div><dt>ID</dt><dd>#{{ row.id }}</dd></div><div><dt>{{ text.received }}</dt><dd>{{ date(row.receivedAt.endsWith('Z')||row.receivedAt.includes('T')?row.receivedAt:row.receivedAt.replace(' ','T')+'Z') }}</dd></div><div><dt>{{ text.machine }}</dt><dd>{{ row.agent }} (#{{ row.agentId }})</dd></div></dl><section v-if="threats && guidance(row.event)" class="threat-explanation">
+          <h3>{{ guidance(row.event)?.title }}</h3><p>{{ guidance(row.event)?.meaning }}</p>
+          <strong>{{ thai ? 'ผลที่หลักฐานระบุ' : 'Recorded outcome' }}</strong><p>{{ guidance(row.event)?.outcome }}</p>
+          <strong>{{ thai ? 'ควรตรวจสอบอะไร' : 'What to investigate' }}</strong><p>{{ guidance(row.event)?.action }}</p>
+          <strong>{{ thai ? 'หลักฐานต้นฉบับจากแหล่งข้อมูล' : 'Original source evidence' }}</strong>
+        </section><pre>{{ row.detailsJson==='{}'?text.detailsEmpty:details(row) }}</pre></div></td></tr></template>
       </tbody></table></div>
       <div v-if="rows.length" class="log-pagination"><button v-if="more" class="secondary" :disabled="loading" @click="load(true)">{{ loading?text.loading:text.more }}</button><small v-else>{{ text.end }}</small></div>
     </section>
@@ -100,5 +117,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.threat-notice{padding:20px;margin-bottom:20px;border-left:3px solid #e5b85c}.threat-notice p,.threat-explanation p{line-height:1.7;color:#b8cbe3}.threat-notice small{color:#91a3bc}.threat-explanation{margin-bottom:16px}.threat-explanation h3{margin-top:0}.threat-explanation strong{color:#d7e5f5}
 .logs-view{min-width:0}.logs-view header{gap:16px}.log-filters{padding:22px;margin-bottom:20px}.log-search{display:flex;align-items:flex-end;gap:12px;margin-bottom:18px}.log-search label{flex:1}.log-search .primary{min-height:42px}.log-filter-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.log-filter-grid label{min-width:0}.log-filter-grid input,.log-filter-grid select{width:100%}.log-advanced{margin-top:16px;border-top:1px solid #26344a;padding-top:14px}.log-advanced summary,.log-help summary{cursor:pointer;color:#b8cbe3;font-weight:600}.log-advanced .log-filter-grid{margin-top:14px}.log-note,.log-filter-footer small{color:#91a3bc;font-size:12px;line-height:1.6}.log-filter-footer{display:flex;gap:16px;justify-content:space-between;align-items:center;margin-top:14px}.log-filter-footer .link{white-space:nowrap}.log-results{overflow:hidden}.log-results-head{padding:20px;display:flex;justify-content:space-between;gap:14px;align-items:center}.log-results-head small{display:block;color:#91a3bc;font-size:12px;margin-top:5px}.log-table-scroll{position:relative;overflow-x:auto}.log-table{min-width:760px;width:100%;border-collapse:collapse;text-align:left;font-size:13px}.log-table th{background:#101d2d;color:#a8bad1;font-size:12px;font-weight:600}.log-table th,.log-table td{padding:14px 10px;border-bottom:1px solid #213047;vertical-align:top}.log-table td:nth-child(6){white-space:nowrap}.log-table td:first-child{min-width:130px}.log-table td strong{font-size:12px;overflow-wrap:anywhere}.log-table small{display:block;margin-top:5px;color:#8a9db6;overflow-wrap:anywhere}.log-table td{max-width:270px;overflow-wrap:anywhere}.log-severity{display:inline-block;border:1px solid #34465e;background:#172438;color:#b9cce3;padding:4px 8px;border-radius:6px;font-size:11px}.log-severity.warning{background:#3a2c11;border-color:#70531b;color:#ffd484}.log-severity.error,.log-severity.critical{background:#3b1924;border-color:#753044;color:#ffa7b7}.log-severity.notice{color:#86dcc2}.log-detail-button{position:relative;padding:5px 10px;min-width:34px}.log-detail-row td{background:#0b1421;max-width:none}.log-event-details{position:sticky;left:16px;width:min(680px,calc(100vw - 90px))}.log-detail-row dl{display:flex;flex-wrap:wrap;gap:18px;margin:0 0 14px}.log-detail-row dt{color:#8a9db6;font-size:11px}.log-detail-row dd{margin:5px 0 0}.log-detail-row pre,.log-help pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;color:#b5d9ce;max-height:320px;overflow:auto;font-size:12px}.log-pagination{text-align:center;padding:18px;color:#91a3bc;font-size:12px}.log-help{min-height:0;margin-top:20px;padding:18px 22px}.log-help p{color:#91a3bc;line-height:1.7;font-size:13px}.custom-period{margin-top:14px;grid-template-columns:1fr 1fr;align-items:end}.custom-period small{grid-column:1/-1;color:#91a3bc}.log-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:1100px){.log-filter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.log-results-head{align-items:flex-start;flex-direction:column}}@media(max-width:600px){.log-filters{padding:16px}.log-search{align-items:stretch;flex-direction:column}.log-filter-grid{grid-template-columns:1fr}.log-filter-footer{align-items:flex-start;flex-direction:column}.logs-view header{align-items:flex-start}.log-table th,.log-table td{padding:12px}.custom-period small{grid-column:auto}}
 </style>

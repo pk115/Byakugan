@@ -109,7 +109,7 @@ const showReportScheduleForm=ref(false);
 const showReportDeliveryForm=ref(false);
 const selectedIncident=ref<Incident|null>(null);
 const showBackupConnectorForm=ref(false);const showIncidentForm=ref(false);
-const activeView = ref<"certificates" | "health" | "dashboard" | "actions" | "incidents" | "agents" | "vulnerabilities" | "heartbeats" | "logs" | "notifications" | "shares" | "audit" | "users" | "settings" | "detail">("dashboard");
+const activeView = ref<"threats" | "certificates" | "health" | "dashboard" | "actions" | "incidents" | "agents" | "vulnerabilities" | "heartbeats" | "logs" | "notifications" | "shares" | "audit" | "users" | "settings" | "detail">("dashboard");
 const logAgentId = ref(0);
 const canReadLogs = computed(() => ["ADMIN","OPERATOR","AUDITOR"].includes(session.value?.user?.role??""));
 function openLogs(agentId = 0) { logAgentId.value = agentId; activeView.value = "logs"; }
@@ -667,6 +667,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
         <button :class="{ active: activeView === 'incidents' }" @click="activeView = 'incidents'"><span><AppIcon name="incident" /></span> {{ t('nav.incidents') }} <b v-if="pendingIncidents.length" class="nav-badge">{{ pendingIncidents.length }}</b></button>
         <button :class="{ active: activeView === 'vulnerabilities' }" @click="activeView = 'vulnerabilities'"><span><AppIcon name="shield" /></span> {{ t('nav.vulnerabilities') }} <b v-if="vulnerabilities.length" class="nav-badge">{{ vulnerabilities.length }}</b></button>
         <button :class="{ active: activeView === 'notifications' }" @click="activeView = 'notifications'"><span><AppIcon name="bell" /></span> {{ t('nav.notifications') }}</button>
+        <button v-if="canReadLogs" :class="{ active: activeView === 'threats' }" @click="activeView = 'threats'"><span><AppIcon name="shield" /></span> {{ thai ? 'ภัยคุกคาม' : 'Threats' }}</button>
         <button v-if="canReadLogs" :class="{ active: activeView === 'logs' }" @click="openLogs()"><span><AppIcon name="logs" /></span> {{ thai ? 'บันทึกเหตุการณ์' : 'Event logs' }}</button>
         <span class="nav-section">{{ t('nav.status') }}</span>
         <button :class="{ active: activeView === 'shares' }" @click="activeView = 'shares'"><span><AppIcon name="external" /></span> {{ t('nav.shares') }}</button>
@@ -752,6 +753,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
         <section v-if="isAdmin && health" class="panel page-panel health-sources"><label>{{ thai ? 'แหล่ง log ที่ต้องส่งต่อเนื่อง (ข้อ 7) — คั่นด้วยจุลภาค เช่น host, nginx, vpn' : 'Log sources expected continuously (item 7) — comma separated, e.g. host, nginx, vpn' }}<input id="log-sources" v-model="logSourcesText" placeholder="host, nginx, vpn, firewall, db"></label><button class="primary" :disabled="busy" @click="saveLogSources">{{ thai ? 'บันทึก' : 'Save' }}</button></section>
       </template>
 
+      <LogsView v-else-if="activeView === 'threats' && canReadLogs" key="threats" threats :timezone="regionalForm.userTimezone==='SYSTEM'?regionalForm.applicationTimezone:regionalForm.userTimezone" />
       <LogsView v-else-if="activeView === 'logs' && canReadLogs" :key="logAgentId" :initial-agent-id="logAgentId" :timezone="regionalForm.userTimezone==='SYSTEM'?regionalForm.applicationTimezone:regionalForm.userTimezone" />
 
       <template v-else-if="activeView === 'agents'">

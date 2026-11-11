@@ -107,9 +107,15 @@ export function purgeExpiredLogs(now = new Date()) {
   return deleted;
 }
 
-export type LogQuery = { source?: string; event?: string; actor?: string; srcIp?: string; result?: string; host?: string; from?: string; to?: string; limit?: number; agentId?: number; severity?: string; search?: string; beforeTime?: string; beforeId?: number };
+// These are investigation candidates, not proof of compromise. Keep routine HTTP errors out.
+export const threatEventNames = [...AUTH_FAILURES, "FIREWALL_DENY"];
+export type LogQuery = { threatOnly?: "true"; source?: string; event?: string; actor?: string; srcIp?: string; result?: string; host?: string; from?: string; to?: string; limit?: number; agentId?: number; severity?: string; search?: string; beforeTime?: string; beforeId?: number };
 export function queryLogs(q: LogQuery) {
   const where: string[] = []; const params: unknown[] = [];
+  if (q.threatOnly === "true") {
+    where.push(`l.event IN (${threatEventNames.map(() => "?").join(",")})`);
+    params.push(...threatEventNames);
+  }
   const eq = (column: string, value?: string) => { if (value) { where.push(`${column}=?`); params.push(value); } };
   eq("l.source", q.source); eq("l.event", q.event); eq("l.actor", q.actor); eq("l.src_ip", q.srcIp); eq("l.result", q.result); eq("l.host", q.host);
   eq("l.severity", q.severity);
