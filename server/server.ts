@@ -221,14 +221,17 @@ app.post("/api/settings/data/preview", { preHandler: requireAuth }, async (reque
   const user = currentUser(request);
   if (user?.role !== "ADMIN") return reply.code(403).send({ error: "Administrator role required" });
   const body = parse(cleanupSchema, request.body, reply);
-  if (body) return previewCleanup(user.id, body);
+  if (body) {
+    try { return previewCleanup(user.id, body); }
+    catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : "Preview failed" }); }
+  }
 });
 app.post("/api/settings/data/cleanup", { preHandler: requireAuth, config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (request, reply) => {
   const user = currentUser(request);
   if (user?.role !== "ADMIN") return reply.code(403).send({ error: "Administrator role required" });
-  const body = parse(z.object({ previewId: z.string().uuid(), confirmation: z.literal("DELETE HISTORY") }), request.body, reply);
+  const body = parse(z.object({ previewId: z.string().uuid(), confirmation: z.enum(["DELETE HISTORY", "RESET MONITORING"]) }), request.body, reply);
   if (!body) return;
-  try { return await executeCleanup(user.id, body.previewId); }
+  try { return await executeCleanup(user.id, body.previewId, body.confirmation); }
   catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : "Cleanup failed" }); }
 });
 app.get("/api/settings/regional",{preHandler:requireAuth},async(request)=>{const user=currentUser(request);const get=(key:string,fallback:string)=>(db.prepare("SELECT value FROM app_settings WHERE key=?").get(key) as {value?:string}|undefined)?.value??fallback;return{supportedLocales:["th-TH","en-US"],supportedTimezones:Intl.supportedValuesOf("timeZone"),systemLocale:get("system_locale","th-TH"),applicationTimezone:get("application_timezone","Asia/Bangkok"),serverTimezone:Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",serverNow:new Date().toISOString(),userLocale:user?.locale??"en-US",userTimezone:user?.timezone??"SYSTEM"}});
