@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { api } from "./api";
+import LogsView from "./LogsView.vue";
 import { locale, setLocale, t, type Locale } from "./i18n";
 
 type Session = { configured: boolean; authenticated: boolean; user?:{id:number;username:string;role:"ADMIN"|"OPERATOR"|"AUDITOR"|"VIEWER";mfaEnabled:boolean;mfaRequired:boolean;locale:Locale;timezone:string}|null };
@@ -95,7 +96,10 @@ const showUserForm=ref(false);
 const showReportScheduleForm=ref(false);
 const showReportDeliveryForm=ref(false);
 const showBackupConnectorForm=ref(false);const showIncidentForm=ref(false);
-const activeView = ref<"health" | "dashboard" | "actions" | "incidents" | "agents" | "vulnerabilities" | "heartbeats" | "notifications" | "shares" | "audit" | "users" | "settings" | "detail">("dashboard");
+const activeView = ref<"health" | "dashboard" | "actions" | "incidents" | "agents" | "vulnerabilities" | "heartbeats" | "logs" | "notifications" | "shares" | "audit" | "users" | "settings" | "detail">("dashboard");
+const logAgentId = ref(0);
+const canReadLogs = computed(() => ["ADMIN","OPERATOR","AUDITOR"].includes(session.value?.user?.role??""));
+function openLogs(agentId = 0) { logAgentId.value = agentId; activeView.value = "logs"; }
 const editingId = ref<number | null>(null);
 const selected = ref<Project | null>(null);
 const heartbeats = ref<Heartbeat[]>([]);
@@ -602,15 +606,16 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
       <div class="brand"><img src="/byakugan-eye-original-v4.png?v=4" alt="">Byakugan</div>
       <nav>
         <span class="nav-section">{{ t('nav.overview') }}</span>
-        <button :class="{ active: activeView === 'dashboard' }" @click="activeView = 'dashboard'"><span>⌁</span> {{ t('nav.dashboard') }}</button>
+        <button :class="{ active: activeView === 'dashboard' }" @click="activeView = 'dashboard'"><span>⌁</span> {{ t('nav.monitors') }}</button>
         <button :class="{ active: activeView === 'actions' }" @click="activeView = 'actions'"><span>!</span> {{ t('nav.actions') }} <b v-if="findings.length" class="nav-badge">{{ findings.length }}</b></button>
         <span class="nav-section">{{ t('nav.monitoring') }}</span>
         <button :class="{ active: activeView === 'health' }" @click="activeView = 'health'; loadHealth()"><span>♥</span> Health Check <b v-if="health && (health.summary.critical || health.summary.warning)" :class="['nav-badge', health.summary.critical ? 'lvl-critical-badge' : '']">{{ health.summary.critical + health.summary.warning }}</b></button>
-        <button :class="{ active: activeView === 'heartbeats' }" @click="activeView = 'heartbeats'"><span>◷</span> {{ t('nav.monitors') }}</button>
+        <button :class="{ active: activeView === 'heartbeats' }" @click="activeView = 'heartbeats'"><span>◷</span> {{ t('nav.heartbeats') }}</button>
         <button :class="{ active: activeView === 'agents' }" @click="activeView = 'agents'"><span>▣</span> {{ t('nav.agents') }}</button>
         <button :class="{ active: activeView === 'incidents' }" @click="activeView = 'incidents'"><span>△</span> {{ t('nav.incidents') }} <b v-if="incidents.filter(x=>!x.resolvedAt||x.reviewStatus!=='APPROVED').length" class="nav-badge">{{ incidents.filter(x=>!x.resolvedAt||x.reviewStatus!=='APPROVED').length }}</b></button>
         <button :class="{ active: activeView === 'vulnerabilities' }" @click="activeView = 'vulnerabilities'"><span>⬡</span> {{ t('nav.vulnerabilities') }} <b v-if="vulnerabilities.length" class="nav-badge">{{ vulnerabilities.length }}</b></button>
         <button :class="{ active: activeView === 'notifications' }" @click="activeView = 'notifications'"><span>♢</span> {{ t('nav.notifications') }}</button>
+        <button v-if="canReadLogs" :class="{ active: activeView === 'logs' }" @click="openLogs()"><span>≡</span> {{ thai ? 'บันทึกเหตุการณ์' : 'Event logs' }}</button>
         <span class="nav-section">{{ t('nav.status') }}</span>
         <button :class="{ active: activeView === 'shares' }" @click="activeView = 'shares'"><span>↗</span> {{ t('nav.shares') }}</button>
         <span class="nav-section nav-audit">{{ t('nav.audit') }}</span>
@@ -689,11 +694,13 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
         <section v-if="isAdmin && health" class="panel page-panel health-sources"><label>{{ thai ? 'แหล่ง log ที่ต้องส่งต่อเนื่อง (ข้อ 7) — คั่นด้วยจุลภาค เช่น host, nginx, vpn' : 'Log sources expected continuously (item 7) — comma separated, e.g. host, nginx, vpn' }}<input id="log-sources" v-model="logSourcesText" placeholder="host, nginx, vpn, firewall, db"></label><button class="primary" :disabled="busy" @click="saveLogSources">{{ thai ? 'บันทึก' : 'Save' }}</button></section>
       </template>
 
+      <LogsView v-else-if="activeView === 'logs' && canReadLogs" :key="logAgentId" :initial-agent-id="logAgentId" :timezone="regionalForm.userTimezone==='SYSTEM'?regionalForm.applicationTimezone:regionalForm.userTimezone" />
+
       <template v-else-if="activeView === 'agents'">
         <header><div><h1>{{ t('page.agents') }}</h1><p>{{ t('page.agentsSub') }}</p></div><button v-if="canWrite" class="primary" @click="openAgentCreate">＋ {{ t('page.add') }}</button></header>
         <section class="usage-guide"><article><b>1 · Enroll</b><span>กด “เพิ่ม” ตั้งชื่อเครื่อง แล้วคัดลอก token ซึ่งแสดงเพียงครั้งเดียว</span></article><article><b>2 · Install</b><span>เลือกติดตั้ง Agent แบบ Linux Docker หรือ Windows PowerShell แล้วกำหนด URL กับ token</span></article><article><b>3 · Collect</b><span>เมื่อ Agent เชื่อมต่อ ระบบจะแสดง CPU, RAM, patch, Docker และหลักฐาน Audit</span></article></section>
-        <section class="panel page-panel"><div v-if="!agents.length" class="empty"><div class="empty-icon">▣</div><h2>No server agents</h2><p>Enroll a Linux or Windows server to begin automatic ISO evidence collection.</p><button v-if="canWrite" class="primary" @click="openAgentCreate">Enroll first server</button></div><div v-else class="agent-list"><article v-for="item in agents" :key="item.id" class="agent-row"><span :class="['status-dot',item.enabled&&item.lastSeenAt?'up':'down']"></span><span><strong>{{ item.hostname||item.name }}</strong><small>{{ item.osName||'Waiting for first evidence' }} {{ item.osVersion||'' }}</small></span><span><small>CPU</small>{{ formatMetric(item.cpuPercent,'%') }}</span><span><small>Memory</small>{{ formatMetric(item.memoryPercent,'%') }}</span><span><small>Security updates</small>{{ item.securityUpdates??'—' }}</span><span><small>Last evidence</small>{{ relative(item.lastSeenAt) }}</span><button v-if="canWrite" class="icon-button" :title="item.lastSeenAt?'Revoke and archive agent':'Remove unused enrollment'" @click="revokeAgent(item)">⌫</button></article></div></section>
-        <section class="security-note"><strong>Agent privacy</strong><p>The agent sends operating-system inventory and metrics only. It does not read or transmit passwords, private keys, application secrets, or environment-variable values.</p></section>
+        <section class="panel page-panel"><div v-if="!agents.length" class="empty"><div class="empty-icon">▣</div><h2>No server agents</h2><p>Enroll a Linux or Windows server to begin automatic ISO evidence collection.</p><button v-if="canWrite" class="primary" @click="openAgentCreate">Enroll first server</button></div><div v-else class="agent-list"><article v-for="item in agents" :key="item.id" class="agent-row"><span :class="['status-dot',item.enabled&&item.lastSeenAt?'up':'down']"></span><span><strong>{{ item.hostname||item.name }}</strong><small>{{ item.osName||'Waiting for first evidence' }} {{ item.osVersion||'' }}</small></span><span><small>CPU</small>{{ formatMetric(item.cpuPercent,'%') }}</span><span><small>Memory</small>{{ formatMetric(item.memoryPercent,'%') }}</span><span><small>Security updates</small>{{ item.securityUpdates??'—' }}</span><span><small>Last evidence</small>{{ relative(item.lastSeenAt) }}</span><div class="agent-row-actions"><button v-if="canReadLogs" class="secondary" @click="openLogs(item.id)">{{ thai ? 'ดู Log' : 'View logs' }}</button><button v-if="canWrite" class="icon-button" :title="item.lastSeenAt?'Revoke and archive agent':'Remove unused enrollment'" @click="revokeAgent(item)">⌫</button></div></article></div></section>
+        <section class="security-note"><strong>{{ thai ? 'ข้อมูลที่ Agent ส่ง' : 'Agent collection' }}</strong><p>{{ thai ? 'Agent ส่งข้อมูลเครื่อง metrics และ log เหตุการณ์ที่รองรับ ส่วนผลสแกนส่งตามงานที่สั่ง ดูเหตุการณ์รายเครื่องได้จากปุ่ม “ดู Log”' : 'The agent sends inventory, metrics and supported event logs. Scan findings are uploaded for configured scan jobs. Select View logs to inspect events for a machine.' }}</p></section>
       </template>
 
       <template v-else-if="activeView === 'vulnerabilities'">

@@ -106,15 +106,26 @@ export function purgeExpiredLogs(now = new Date()) {
   return deleted;
 }
 
-export type LogQuery = { source?: string; event?: string; actor?: string; srcIp?: string; result?: string; host?: string; from?: string; to?: string; limit?: number };
+export type LogQuery = { source?: string; event?: string; actor?: string; srcIp?: string; result?: string; host?: string; from?: string; to?: string; limit?: number; agentId?: number; severity?: string; search?: string; beforeTime?: string; beforeId?: number };
 export function queryLogs(q: LogQuery) {
   const where: string[] = []; const params: unknown[] = [];
   const eq = (column: string, value?: string) => { if (value) { where.push(`${column}=?`); params.push(value); } };
   eq("l.source", q.source); eq("l.event", q.event); eq("l.actor", q.actor); eq("l.src_ip", q.srcIp); eq("l.result", q.result); eq("l.host", q.host);
+  eq("l.severity", q.severity);
+  if (q.agentId) { where.push("l.agent_id=?"); params.push(q.agentId); }
+  if (q.search) {
+    const term = `%${q.search.replace(/[\\%_]/g, "\\$&")}%`;
+    where.push("(l.event LIKE ? ESCAPE '\\' OR l.host LIKE ? ESCAPE '\\' OR l.actor LIKE ? ESCAPE '\\' OR l.src_ip LIKE ? ESCAPE '\\' OR l.details_json LIKE ? ESCAPE '\\')");
+    params.push(term, term, term, term, term);
+  }
+  if (q.beforeTime && q.beforeId) {
+    where.push("(l.occurred_at<? OR (l.occurred_at=? AND l.id<?))");
+    params.push(q.beforeTime, q.beforeTime, q.beforeId);
+  }
   if (q.from) { where.push("l.occurred_at>=?"); params.push(q.from); }
   if (q.to) { where.push("l.occurred_at<=?"); params.push(q.to); }
   const limit = Math.min(Math.max(Math.trunc(q.limit ?? 200) || 200, 1), 1000);
-  return db.prepare(`SELECT l.id,a.name AS agent,l.source,l.event,l.host,l.actor,l.src_ip AS srcIp,l.result,l.severity,l.details_json AS detailsJson,l.occurred_at AS occurredAt
+  return db.prepare(`SELECT l.id,l.agent_id AS agentId,a.name AS agent,l.source,l.event,l.host,l.actor,l.src_ip AS srcIp,l.result,l.severity,l.details_json AS detailsJson,l.occurred_at AS occurredAt,l.received_at AS receivedAt
     FROM log_events l JOIN agents a ON a.id=l.agent_id ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY l.occurred_at DESC,l.id DESC LIMIT ?`).all(...params, limit);
 }
 

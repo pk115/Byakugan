@@ -30,6 +30,25 @@ describe("sample CSV mapping", () => {
 });
 
 describe("log ingestion", () => {
+  it("filters by agent, severity and literal search, and pages by event time with tied timestamps", () => {
+    const second = Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('windows-test','h2')").run().lastInsertRowid);
+    const timestamp = "2026-11-11T00:00:00.000Z";
+    logs.ingestLogs(second, [
+      event({ timestamp, event: "LOGIN_FAILED", host: "WIN01", actor: "alice", severity: "error", details: { reason: "100%_literal" } }),
+      event({ timestamp, event: "SERVICE_STOP", host: "WIN01", severity: "error" }),
+      event({ timestamp: "2026-11-10T00:00:00.000Z", event: "LOGIN_SUCCESS", host: "WIN01" })
+    ]);
+    const first = logs.queryLogs({ agentId: second, severity: "error", limit: 1 }) as Array<{ id: number; occurredAt: string }>;
+    expect(first).toHaveLength(1);
+    const next = logs.queryLogs({ agentId: second, severity: "error", beforeTime: first[0].occurredAt, beforeId: first[0].id }) as Array<{ id: number }>;
+    expect(next).toHaveLength(1);
+    expect(next[0].id).not.toBe(first[0].id);
+    expect(logs.queryLogs({ agentId: second, search: "100%_literal" })).toHaveLength(1);
+    expect(logs.queryLogs({ agentId: second, search: "100%missing" })).toHaveLength(0);
+    expect(logs.queryLogs({ agentId: agentId, search: "WIN01" })).toHaveLength(0);
+    expect(logs.queryLogs({ agentId: second, from: timestamp, to: timestamp })).toHaveLength(2);
+    db.prepare("DELETE FROM agents WHERE id=?").run(second);
+  });
   it("dedupes, alerts on repeated failures, resolves, and purges past retention", () => {
     const batch = Array.from({ length: 10 }, (_, i) => event({ actor: "root", srcIp: `203.0.113.${i}` }));
     expect(logs.ingestLogs(agentId, batch)).toEqual({ accepted: 10, duplicates: 0 });
