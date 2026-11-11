@@ -160,6 +160,9 @@ if ((db.pragma("table_info(incidents)") as Array<{ name: string; notnull: number
     ALTER TABLE incidents_new RENAME TO incidents;
   `))();
 }
+ensureColumn("incidents", "closed_at", "TEXT");
+ensureColumn("incidents", "closed_by", "INTEGER REFERENCES users(id) ON DELETE SET NULL");
+
 db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,

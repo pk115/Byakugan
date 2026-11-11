@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { api } from "./api";
+import AppIcon from "./AppIcon.vue";
 import { locale } from "./i18n";
 
 type LogEvent = { id:number; agentId:number; agent:string; source:string; event:string; host:string|null; actor:string|null; srcIp:string|null; result:string|null; severity:string; detailsJson:string; occurredAt:string; receivedAt:string };
@@ -64,7 +65,7 @@ onMounted(() => {
 
 <template>
   <section class="logs-view">
-    <header><div><h1>{{ text.title }}</h1><p>{{ text.subtitle }}</p></div><button class="secondary" :disabled="loading" @click="load()">↻ {{ text.refresh }}</button></header>
+    <header><div><h1>{{ text.title }}</h1><p>{{ text.subtitle }}</p></div><button class="secondary" :disabled="loading" @click="load()"><AppIcon name="refresh" /> {{ text.refresh }}</button></header>
     <form class="panel log-filters" @submit.prevent="load()">
       <div class="log-search"><label>{{ text.search }}<input v-model="filters.search" maxlength="200" :placeholder="text.searchHint"></label><button class="primary" :disabled="loading">{{ loading ? text.loading : text.search }}</button></div>
       <div class="log-filter-grid">
@@ -89,7 +90,7 @@ onMounted(() => {
       <div v-if="loading && !rows.length" class="empty" role="status">{{ text.loading }}</div>
       <div v-else-if="searched && !rows.length && !error" class="empty"><h2>{{ text.empty }}</h2><p>{{ text.emptyHint }}</p></div>
       <div v-if="rows.length" class="log-table-scroll"><table class="log-table"><caption class="log-sr-only">{{ text.title }} — {{ text.moreHint }}</caption><thead><tr><th>{{ text.time }}</th><th>{{ text.severity }}</th><th>{{ text.event }}</th><th>{{ text.machine }}</th><th>{{ text.actor }} / {{ text.ip }}</th><th>{{ text.result }}</th><th>{{ text.detail }}</th></tr></thead><tbody>
-        <template v-for="row in rows" :key="row.id"><tr><td><time :datetime="row.occurredAt">{{ date(row.occurredAt) }}</time></td><td><span :class="['log-severity',row.severity]">{{ row.severity }}</span></td><td><strong>{{ row.event }}</strong><small>{{ row.source }}</small></td><td>{{ row.host||row.agent }}<small>{{ row.agent }}</small></td><td>{{ row.actor||'—' }}<small>{{ row.srcIp||'—' }}</small></td><td>{{ row.result||'—' }}</td><td><button class="secondary log-detail-button" :aria-expanded="expanded===row.id" :aria-controls="`log-detail-${row.id}`" @click="expanded=expanded===row.id?null:row.id">{{ expanded===row.id?'−':'＋' }}<span class="log-sr-only"> {{ text.detail }} #{{ row.id }}</span></button></td></tr>
+        <template v-for="row in rows" :key="row.id"><tr><td><time :datetime="row.occurredAt">{{ date(row.occurredAt) }}</time></td><td><span :class="['log-severity',row.severity]">{{ row.severity }}</span></td><td><strong>{{ row.event }}</strong><small>{{ row.source }}</small></td><td>{{ row.host||row.agent }}<small>{{ row.agent }}</small></td><td>{{ row.actor||'—' }}<small>{{ row.srcIp||'—' }}</small></td><td>{{ row.result||'—' }}</td><td><button class="secondary log-detail-button" :aria-expanded="expanded===row.id" :aria-controls="`log-detail-${row.id}`" @click="expanded=expanded===row.id?null:row.id"><AppIcon :name="expanded===row.id?'x':'plus'" /><span class="log-sr-only"> {{ text.detail }} #{{ row.id }}</span></button></td></tr>
         <tr v-if="expanded===row.id" :id="`log-detail-${row.id}`" class="log-detail-row"><td colspan="7"><div class="log-event-details"><dl><div><dt>ID</dt><dd>#{{ row.id }}</dd></div><div><dt>{{ text.received }}</dt><dd>{{ date(row.receivedAt.endsWith('Z')||row.receivedAt.includes('T')?row.receivedAt:row.receivedAt.replace(' ','T')+'Z') }}</dd></div><div><dt>{{ text.machine }}</dt><dd>{{ row.agent }} (#{{ row.agentId }})</dd></div></dl><pre>{{ row.detailsJson==='{}'?text.detailsEmpty:details(row) }}</pre></div></td></tr></template>
       </tbody></table></div>
       <div v-if="rows.length" class="log-pagination"><button v-if="more" class="secondary" :disabled="loading" @click="load(true)">{{ loading?text.loading:text.more }}</button><small v-else>{{ text.end }}</small></div>

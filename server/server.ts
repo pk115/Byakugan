@@ -1,3 +1,4 @@
+import { activeFindingStatusSql } from "./finding-status.js";
 import { existsSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -15,7 +16,7 @@ import { decrypt, encrypt } from "./crypto.js";
 import { db, publicProject, type ProjectRow } from "./database.js";
 import { checkProject } from "./monitor.js";
 import { dispatchSecurityNotification, testNotification, type NotificationType } from "./notifications.js";
-import { startScheduler, stopScheduler } from "./scheduler.js";
+import { startScheduler, stopScheduler, runHealthNow } from "./scheduler.js";
 import { appendAuditEvent, verifyAuditChain } from "./audit.js";
 import { auditPeriod, collectAuditReport, createHealthPdf, createPdfReport, createXlsxReport, reportSha256 } from "./reports.js";
 import { createMfaSecret, createRecoveryCodes, mfaUri, recoveryCodeHash, verifyMfaCode } from "./mfa.js";
@@ -165,7 +166,7 @@ const reportDeliveryChannelSchema=z.discriminatedUnion("type",[smtpDeliverySchem
 function deliveryConfig(body:z.infer<typeof reportDeliveryChannelSchema>):DeliveryConfig{if(body.type==="SMTP"){const{name,type,...config}=body;void name;void type;return{type:"SMTP",config}}const{name,type,...config}=body;void name;void type;return{type:"S3",config}}
 const backupConnectorSchema=z.object({name:z.string().trim().min(1).max(120),assetName:z.string().trim().min(1).max(150),backupType:z.enum(["FULL","INCREMENTAL","SNAPSHOT","DATABASE","CONFIGURATION"]),maxAgeHours:z.number().int().min(1).max(8760)});
 const backupIngestSchema=z.object({status:z.enum(["SUCCESS","WARNING","FAILED"]),startedAt:z.string().datetime(),completedAt:z.string().datetime().nullable().optional(),storageLocation:z.string().trim().min(1).max(500),sizeBytes:z.number().int().nonnegative().nullable().optional(),checksum:z.string().trim().max(256).nullable().optional(),notes:z.string().trim().max(2000).nullable().optional()});
-const incidentReviewSchema=z.object({severity:z.enum(["LOW","MEDIUM","HIGH","CRITICAL"]),owner:z.string().trim().max(150).nullable().optional(),rootCause:z.string().trim().max(4000).nullable().optional(),correctiveAction:z.string().trim().max(4000).nullable().optional(),lessonsLearned:z.string().trim().max(4000).nullable().optional(),reviewStatus:z.enum(["PENDING","IN_REVIEW","APPROVED"])}).superRefine((value,context)=>{if(value.reviewStatus==="APPROVED"&&(!value.rootCause||!value.correctiveAction))context.addIssue({code:"custom",path:["rootCause"],message:"Root cause and corrective action are required for approval"})});
+const incidentReviewSchema=z.object({severity:z.enum(["LOW","MEDIUM","HIGH","CRITICAL"]),owner:z.string().trim().max(150).nullable().optional(),rootCause:z.string().trim().max(4000).nullable().optional(),correctiveAction:z.string().trim().max(4000).nullable().optional(),lessonsLearned:z.string().trim().max(4000).nullable().optional(),reviewStatus:z.enum(["PENDING","IN_REVIEW","APPROVED"]),closeCase:z.boolean().optional()}).superRefine((value,context)=>{if(value.reviewStatus==="APPROVED"&&(!value.rootCause||!value.correctiveAction))context.addIssue({code:"custom",path:["rootCause"],message:"Root cause and corrective action are required for approval"});if(value.closeCase&&value.reviewStatus!=="APPROVED")context.addIssue({code:"custom",path:["reviewStatus"],message:"Approve the review before closing the case"})});
 const mfaCodeSchema=z.object({code:z.string().regex(/^\d{6}$/)});const mfaLoginSchema=z.object({challengeToken:z.string().min(32).max(128),code:z.string().trim().regex(/^(?:\d{6}|[A-Fa-f0-9]{4}(?:-[A-Fa-f0-9]{4}){2})$/)});
 const preferencesSchema=z.object({locale:z.enum(["en-US","th-TH"]),timezone:z.string().trim().min(1).max(100).refine(value=>value==="SYSTEM"||Intl.supportedValuesOf("timeZone").includes(value),"Unsupported timezone")});
 const systemRegionalSchema=z.object({locale:z.enum(["en-US","th-TH"]),timezone:z.string().trim().min(1).max(100).refine(value=>Intl.supportedValuesOf("timeZone").includes(value),"Unsupported timezone")});
@@ -244,8 +245,8 @@ app.post("/api/agent/ingest", { config:{rateLimit:{max:120,timeWindow:"1 minute"
     ];
     for(const finding of findings){
       if(finding.active)db.prepare(`INSERT INTO compliance_findings(agent_id,finding_key,category,severity,status,title,explanation,first_detected_at,last_detected_at)
-        VALUES(?,?,?,?, 'OPEN',?,?,?,?) ON CONFLICT(agent_id,finding_key) DO UPDATE SET severity=excluded.severity,status='OPEN',title=excluded.title,explanation=excluded.explanation,last_detected_at=excluded.last_detected_at,resolved_at=NULL`).run(agent.id,finding.key,finding.category,finding.severity,finding.title,finding.explanation,now,now);
-      else db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=?,last_detected_at=? WHERE agent_id=? AND finding_key=? AND status='OPEN'").run(now,now,agent.id,finding.key);
+        VALUES(?,?,?,?, 'OPEN',?,?,?,?) ON CONFLICT(agent_id,finding_key) DO UPDATE SET status=${activeFindingStatusSql},severity=excluded.severity,title=excluded.title,explanation=excluded.explanation,last_detected_at=excluded.last_detected_at,resolved_at=NULL`).run(agent.id,finding.key,finding.category,finding.severity,finding.title,finding.explanation,now,now);
+      else db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=?,last_detected_at=? WHERE agent_id=? AND finding_key=? AND status IN ('OPEN','ACKNOWLEDGED')").run(now,now,agent.id,finding.key);
     }
     if(body.vulnerabilityScan){
       const values=body.vulnerabilityScan.vulnerabilities;const counts={CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0,UNKNOWN:0};for(const item of values)counts[item.severity]++;
@@ -273,6 +274,16 @@ app.get("/api/logs",{preHandler:requireAuth},async(request,reply)=>{const user=c
 app.get("/api/logs/summary",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Administrator, auditor or operator role required"});const hours=Math.min(Math.max(Number((request.query as {hours?:string}).hours)||24,1),24*365);return{hours,summary:logSummary(new Date(Date.now()-hours*3600000).toISOString())}});
 
 const healthPolicySchema=z.object({warningValue:z.number().nullable(),criticalValue:z.number().nullable(),durationSeconds:z.number().int().min(0).max(86400),enabled:z.boolean()});
+let manualHealthRunning=false;
+app.post("/api/health/run",{preHandler:requireAuth,config:{rateLimit:{max:2,timeWindow:"1 minute"}}},async(request,reply)=>{
+  if(manualHealthRunning)return reply.code(409).send({error:"Health check is already running"});
+  manualHealthRunning=true;
+  try {
+    const result=await runHealthNow();
+    appendAuditEvent(actor(request),"HEALTH_CHECK_RUN","health",null,result);
+    return {...result,health:healthStatus()};
+  } finally {manualHealthRunning=false;}
+});
 app.get("/api/health",{preHandler:requireAuth},async()=>healthStatus());
 app.get("/api/health/report",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user)return reply.code(401).send({error:"Authentication required"});const regional=systemRegional(),buffer=await createHealthPdf(healthStatus().items,{locale:regional.locale,timezone:regional.timezone,preparedBy:user.username});appendAuditEvent(user.id,"HEALTH_REPORT_EXPORTED","health_report",null,{format:"PDF",sha256:reportSha256(buffer)});return reply.header("Content-Disposition",`attachment; filename="byakugan-health-check-${new Date().toISOString().slice(0,10)}.pdf"`).type("application/pdf").send(buffer)});
 app.put("/api/health/policies/:no",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(user?.role!=="ADMIN")return reply.code(403).send({error:"Administrator role required"});const no=Number((request.params as {no:string}).no),body=parse(healthPolicySchema,request.body,reply);if(!body)return;if(!updatePolicy(no,body))return reply.code(404).send({error:"Health policy not found"});appendAuditEvent(user.id,"HEALTH_POLICY_UPDATED","health_policy",no,body);return{ok:true}});
@@ -726,10 +737,23 @@ app.put("/api/projects/:id/notifications", { preHandler: requireAuth }, async (r
 app.get("/api/incidents", { preHandler: requireAuth }, async () => {
   return db.prepare(`SELECT i.id, i.project_id AS projectId, COALESCE(p.name, i.source_label) AS projectName, i.status,
     i.message,i.severity,i.owner,i.root_cause AS rootCause,i.corrective_action AS correctiveAction,i.lessons_learned AS lessonsLearned,
-    i.review_status AS reviewStatus,i.reviewed_at AS reviewedAt,ru.username AS reviewedBy,i.started_at AS startedAt, i.resolved_at AS resolvedAt
+    i.review_status AS reviewStatus,i.reviewed_at AS reviewedAt,ru.username AS reviewedBy,i.started_at AS startedAt, i.resolved_at AS resolvedAt,i.closed_at AS closedAt
     FROM incidents i LEFT JOIN projects p ON p.id = i.project_id LEFT JOIN users ru ON ru.id=i.reviewed_by ORDER BY i.started_at DESC LIMIT 200`).all();
 });
-app.put("/api/incidents/:id/review",{preHandler:requireAuth},async(request,reply)=>{const id=Number((request.params as {id:string}).id),body=parse(incidentReviewSchema,request.body,reply);if(!body)return;const existing=db.prepare("SELECT id,review_status AS reviewStatus FROM incidents WHERE id=?").get(id) as {id:number;reviewStatus:string}|undefined;if(!existing)return reply.code(404).send({error:"Incident not found"});const now=new Date().toISOString(),reviewer=body.reviewStatus==="APPROVED"?actor(request):null;db.prepare(`UPDATE incidents SET severity=?,owner=?,root_cause=?,corrective_action=?,lessons_learned=?,review_status=?,reviewed_by=?,reviewed_at=? WHERE id=?`).run(body.severity,body.owner??null,body.rootCause??null,body.correctiveAction??null,body.lessonsLearned??null,body.reviewStatus,reviewer,reviewer?now:null,id);appendAuditEvent(actor(request),"INCIDENT_REVIEW_UPDATED","incident",id,{previousStatus:existing.reviewStatus,reviewStatus:body.reviewStatus,severity:body.severity,owner:body.owner});return {ok:true}});
+app.put("/api/incidents/:id/review",{preHandler:requireAuth},async(request,reply)=>{
+  const id=Number((request.params as {id:string}).id),body=parse(incidentReviewSchema,request.body,reply);if(!body)return;
+  const existing=db.prepare("SELECT id,review_status AS reviewStatus,closed_at AS closedAt FROM incidents WHERE id=?").get(id) as {id:number;reviewStatus:string;closedAt:string|null}|undefined;
+  if(!existing)return reply.code(404).send({error:"Incident not found"});
+  const now=new Date().toISOString(),reviewer=body.reviewStatus==="APPROVED"?actor(request):null;
+  db.transaction(()=>{
+    db.prepare(`UPDATE incidents SET severity=?,owner=?,root_cause=?,corrective_action=?,lessons_learned=?,review_status=?,reviewed_by=?,reviewed_at=?,
+      closed_at=CASE WHEN ? THEN COALESCE(closed_at,?) ELSE closed_at END,closed_by=CASE WHEN ? AND closed_at IS NULL THEN ? ELSE closed_by END WHERE id=?`)
+      .run(body.severity,body.owner??null,body.rootCause??null,body.correctiveAction??null,body.lessonsLearned??null,body.reviewStatus,reviewer,reviewer?now:null,Boolean(body.closeCase)?1:0,now,Boolean(body.closeCase)?1:0,actor(request),id);
+    appendAuditEvent(actor(request),"INCIDENT_REVIEW_UPDATED","incident",id,{previousStatus:existing.reviewStatus,reviewStatus:body.reviewStatus,severity:body.severity,owner:body.owner});
+    if(body.closeCase&&!existing.closedAt)appendAuditEvent(actor(request),"INCIDENT_CLOSED","incident",id,{reviewStatus:body.reviewStatus});
+  })();
+  return {ok:true};
+});
 
 app.get("/api/notification-deliveries", { preHandler: requireAuth }, async () => {
   return db.prepare(`SELECT d.id, n.name AS notificationName, p.name AS projectName, d.event,
@@ -836,7 +860,7 @@ app.get("/api/audit/export", { preHandler: requireAuth }, async (request, reply)
     last_status, last_checked_at FROM projects ORDER BY name`).all() as Array<Record<string, unknown>>;
   const heartbeats = db.prepare(`SELECT h.id, p.name AS asset, h.status, h.http_status, h.response_time_ms, h.attempt,
     h.checked_at FROM heartbeats h JOIN projects p ON p.id=h.project_id WHERE h.checked_at BETWEEN ? AND ? ORDER BY h.checked_at`).all(from, to) as Array<Record<string, unknown>>;
-  const incidentsExport = db.prepare(`SELECT i.id,COALESCE(p.name,i.source_label) AS asset,i.status,i.severity,i.owner,i.message,i.root_cause,i.corrective_action,i.lessons_learned,i.review_status,i.started_at,i.resolved_at
+  const incidentsExport = db.prepare(`SELECT i.id,COALESCE(p.name,i.source_label) AS asset,i.status,i.severity,i.owner,i.message,i.root_cause,i.corrective_action,i.lessons_learned,i.review_status,i.started_at,i.resolved_at,i.closed_at,i.closed_by
     FROM incidents i LEFT JOIN projects p ON p.id=i.project_id WHERE i.started_at BETWEEN ? AND ? ORDER BY i.started_at`).all(from, to) as Array<Record<string, unknown>>;
   const mappings = db.prepare(`SELECT p.name AS asset, c.framework, c.code, c.title, pc.evidence_note
     FROM project_controls pc JOIN projects p ON p.id=pc.project_id JOIN iso_controls c ON c.id=pc.control_id ORDER BY c.code,p.name`).all() as Array<Record<string, unknown>>;

@@ -7,6 +7,23 @@ process.env.SUPAPULSE_DATA_DIR = mkdtempSync(join(tmpdir(), "byakugan-health-"))
 const { db } = await import("./database.js");
 const health = await import("./health.js");
 
+it("keeps acknowledgement on downgrade, reopens on escalation, and resolves on recovery", () => {
+  const agent = Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('health-ack','health-ack')").run().lastInsertRowid);
+  const metric = (memory:number,offset:number) => db.prepare("INSERT INTO host_metrics(agent_id,cpu_percent,memory_percent,uptime_seconds,observed_at) VALUES(?,1,?,100,?)").run(agent,memory,new Date(Date.now()+offset).toISOString());
+  const status = () => (db.prepare("SELECT status FROM compliance_findings WHERE agent_id=? AND finding_key='health_ram_percent'").get(agent) as {status:string}).status;
+  try {
+    metric(95,-4000); health.evaluateHealth();
+    db.prepare("UPDATE compliance_findings SET status='ACKNOWLEDGED' WHERE agent_id=?").run(agent);
+    metric(80,-3000); health.evaluateHealth();
+    expect(status()).toBe("ACKNOWLEDGED");
+    metric(96,-2000); health.evaluateHealth();
+    expect(status()).toBe("OPEN");
+    db.prepare("UPDATE compliance_findings SET status='ACKNOWLEDGED' WHERE agent_id=?").run(agent);
+    metric(10,-1000); health.evaluateHealth();
+    expect(status()).toBe("RESOLVED");
+  } finally { db.prepare("DELETE FROM agents WHERE id=?").run(agent); }
+});
+
 const policy = (no: number) => (db.prepare("SELECT direction,warning_value AS warningValue,critical_value AS criticalValue,warning_inclusive AS warningInclusive FROM health_policies WHERE no=?").get(no)) as Parameters<typeof health.classify>[1];
 
 // Boundaries come straight from the Health Check standard table.

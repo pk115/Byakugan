@@ -185,3 +185,13 @@ textarea{width:100%;min-height:92px;resize:vertical;background:#0b1220;border:1p
 .health-sources{display:flex;gap:12px;align-items:flex-end;padding:14px 16px;margin-top:16px;min-height:0}.health-sources label{flex:1;display:grid;gap:6px;font-size:11px;color:#8ea0b8}
 
 .agent-row-actions{display:flex;align-items:center;gap:8px;justify-content:flex-end}.agent-row-actions .secondary{white-space:nowrap;padding:7px 10px;font-size:12px}
+
+.primary,.secondary,.button-link{display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.actions button,.icon-button,.close{display:inline-flex;align-items:center;justify-content:center}
+nav button .app-icon{width:19px;height:19px;stroke-width:1.7}.empty-icon .app-icon{width:34px;height:34px}.finding-asset .app-icon,.finding-modal-asset .app-icon{width:15px;height:15px}
+.workflow-note{color:#a1b2c8;font-size:13px;line-height:1.7;margin:18px 0}.workflow-result{color:#8de2b8;background:#103327;border:1px solid #28664a;padding:12px 15px;border-radius:10px;font-size:13px;line-height:1.6}
+.workflow-filters{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0}.workflow-filters .selected{color:#b5f2d3;border-color:#3c9870;background:#153a2c}.icon-spin{animation:icon-spin 1.2s linear infinite}@keyframes icon-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.icon-spin{animation:none}}
+
+nav button{align-items:center}.nav-badge{align-self:center;flex-shrink:0;line-height:1.4;min-height:20px}
+
+@media(max-width:700px){.content header{flex-wrap:wrap}.content header .detail-actions{flex-wrap:wrap}}

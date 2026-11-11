@@ -1,3 +1,4 @@
+import { activeFindingStatusSql } from "./finding-status.js";
 import { db } from "./database.js";
 import { appendAuditEvent } from "./audit.js";
 import { dispatchHealthNotification } from "./notifications.js";
@@ -48,7 +49,7 @@ db.transaction(() => { for (const row of SEED) seed.run(...row); })();
 db.prepare("UPDATE health_policies SET metric_key='backup_age_ratio',unit='x',warning_value=1,critical_value=2 WHERE no=10 AND metric_key='backup_age_hours'").run();
 
 // The old single-tier cpu/memory/disk findings are replaced by the policy engine (keys health_*).
-db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=CURRENT_TIMESTAMP WHERE finding_key IN ('cpu','memory','disk') AND status='OPEN'").run();
+db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=CURRENT_TIMESTAMP WHERE finding_key IN ('cpu','memory','disk') AND status IN ('OPEN','ACKNOWLEDGED')").run();
 
 const STALE_MS = 15 * 60000;
 export const withUnit = (value: unknown, unit: string) => (value === null || value === undefined ? "—" :`${value}${unit === "%" || unit === "x" ? "" : " "}${unit}`);
@@ -210,14 +211,14 @@ function transition(p: Policy, s: ReturnType<typeof evaluateSubjects>[number], f
   const source = `${p.nameEn} · ${s.label}`, name = s.detail ? `${s.label} (${s.detail})` : s.label, text = `${p.no}. ${p.nameTh}\n${name}: ${withUnit(s.value, p.unit)} → ${s.level}`;
   const findingKey = `health_${p.metricKey}`;
   if (s.level === "NORMAL") {
-    if (s.agentId) db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=?,last_detected_at=? WHERE agent_id=? AND finding_key=? AND status='OPEN'").run(now, now, s.agentId, findingKey);
+    if (s.agentId) db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=?,last_detected_at=? WHERE agent_id=? AND finding_key=? AND status IN ('OPEN','ACKNOWLEDGED')").run(now, now, s.agentId, findingKey);
     db.prepare("UPDATE incidents SET resolved_at=? WHERE health_policy_no=? AND source_label=? AND resolved_at IS NULL").run(now, p.no, source);
     if (from === "WARNING" || from === "CRITICAL") pending.push(() => dispatchHealthNotification("HEALTH_RECOVERY", `🟢 ${text}`));
     return;
   }
   if (s.level !== "WARNING" && s.level !== "CRITICAL") return;
   if (s.agentId) db.prepare(`INSERT INTO compliance_findings(agent_id,finding_key,category,severity,status,title,explanation,first_detected_at,last_detected_at)
-    VALUES(?,?,'HEALTH',?,'OPEN',?,?,?,?) ON CONFLICT(agent_id,finding_key) DO UPDATE SET severity=excluded.severity,status='OPEN',title=excluded.title,explanation=excluded.explanation,last_detected_at=excluded.last_detected_at,resolved_at=NULL`)
+    VALUES(?,?,'HEALTH',?,'OPEN',?,?,?,?) ON CONFLICT(agent_id,finding_key) DO UPDATE SET status=${activeFindingStatusSql},severity=excluded.severity,title=excluded.title,explanation=excluded.explanation,last_detected_at=excluded.last_detected_at,resolved_at=NULL`)
     .run(s.agentId, findingKey, s.level === "CRITICAL" ? "CRITICAL" : "MEDIUM", p.nameEn, `${name}: ${withUnit(s.value, p.unit)} (${s.level})`, now, now);
   if (s.level === "CRITICAL") {
     const open = db.prepare("SELECT id FROM incidents WHERE health_policy_no=? AND source_label=? AND resolved_at IS NULL").get(p.no, source);

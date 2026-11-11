@@ -1,3 +1,4 @@
+import { activeFindingStatusSql } from "./finding-status.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { db } from "./database.js";
@@ -87,9 +88,9 @@ export function evaluateLogAlerts(agentId: number, now = new Date()) {
   const stamp = now.toISOString();
   for (const r of rules) {
     if (r.active) db.prepare(`INSERT INTO compliance_findings(agent_id,finding_key,category,severity,status,title,explanation,first_detected_at,last_detected_at)
-      VALUES(?,?,'LOG',?,'OPEN',?,?,?,?) ON CONFLICT(agent_id,finding_key) DO UPDATE SET severity=excluded.severity,status='OPEN',title=excluded.title,explanation=excluded.explanation,last_detected_at=excluded.last_detected_at,resolved_at=NULL`)
+      VALUES(?,?,'LOG',?,'OPEN',?,?,?,?) ON CONFLICT(agent_id,finding_key) DO UPDATE SET status=${activeFindingStatusSql},severity=excluded.severity,title=excluded.title,explanation=excluded.explanation,last_detected_at=excluded.last_detected_at,resolved_at=NULL`)
       .run(agentId, r.key, r.severity, r.title, r.explanation, stamp, stamp);
-    else db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=?,last_detected_at=? WHERE agent_id=? AND finding_key=? AND status='OPEN'").run(stamp, stamp, agentId, r.key);
+    else db.prepare("UPDATE compliance_findings SET status='RESOLVED',resolved_at=?,last_detected_at=? WHERE agent_id=? AND finding_key=? AND status IN ('OPEN','ACKNOWLEDGED')").run(stamp, stamp, agentId, r.key);
   }
   return rules.filter((r) => r.active).map((r) => r.key);
 }

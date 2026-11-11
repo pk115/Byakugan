@@ -30,6 +30,17 @@ describe("sample CSV mapping", () => {
 });
 
 describe("log ingestion", () => {
+  it("keeps acknowledged alerts acknowledged and resolves them when the condition clears", () => {
+    const id = Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('ack-test','ack-hash')").run().lastInsertRowid);
+    logs.ingestLogs(id, Array.from({length:10},(_,i)=>event({actor:`ack-${i}`})));
+    logs.evaluateLogAlerts(id);
+    db.prepare("UPDATE compliance_findings SET status='ACKNOWLEDGED' WHERE agent_id=?").run(id);
+    logs.evaluateLogAlerts(id);
+    expect((db.prepare("SELECT status FROM compliance_findings WHERE agent_id=? AND finding_key='log_auth_failures'").get(id) as {status:string}).status).toBe("ACKNOWLEDGED");
+    logs.evaluateLogAlerts(id,new Date(Date.now()+20*60000));
+    expect((db.prepare("SELECT status FROM compliance_findings WHERE agent_id=? AND finding_key='log_auth_failures'").get(id) as {status:string}).status).toBe("RESOLVED");
+    db.prepare("DELETE FROM agents WHERE id=?").run(id);
+  });
   it("filters by agent, severity and literal search, and pages by event time with tied timestamps", () => {
     const second = Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('windows-test','h2')").run().lastInsertRowid);
     const timestamp = "2026-11-11T00:00:00.000Z";
