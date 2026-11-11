@@ -27,10 +27,10 @@ const thai = computed(() => locale.value === "th-TH");
 const title = computed(() => props.threats ? (thai.value ? "ภัยคุกคาม" : "Threats") : text.value.title);
 const subtitle = computed(() => props.threats ? (thai.value ? "ตรวจสอบความล้มเหลวในการยืนยันตัวตนและการเชื่อมต่อที่ Firewall ปฏิเสธจาก Log จริง" : "Investigate authentication failures and firewall denials from collected logs") : text.value.subtitle);
 const guidance = (event:string) => threatGuidance(event, thai.value);
-const candidateEvents = ["LOGIN_FAILED","SSH_LOGIN_FAILED","SUDO_AUTH_FAILED","ROOT_LOGIN_DENIED","VPN_AUTH_FAILED","DB_AUTH_FAILED","FIREWALL_DENY"];
+const candidateEvents = ["LOGIN_FAILED","SSH_LOGIN_FAILED","SUDO_AUTH_FAILED","ROOT_LOGIN_DENIED","VPN_AUTH_FAILED","DB_AUTH_FAILED","FIREWALL_DENY","IP_BANNED","HTTP_PROBE"];
 const agentError = ref(false);
 const events = ["LOGIN_SUCCESS","LOGIN_FAILED","SSH_LOGIN_SUCCESS","SSH_LOGIN_FAILED","ROOT_LOGIN_DENIED","SUDO_COMMAND","SUDO_AUTH_FAILED","PRIVILEGE_ASSIGNED","USER_CREATED","GROUP_MEMBER_ADDED","SERVICE_START","SERVICE_STOP","SERVICE_RESTART","SERVICE_INSTALLED","BACKUP_COMPLETE","BACKUP_FAILED","DB_BACKUP_COMPLETE","DB_BACKUP_FAILED","HTTP_REQUEST","FIREWALL_DENY","VPN_AUTH_FAILED"];
-const sources = ["host","nginx","app-audit","db","firewall","vpn"];
+const sources = ["host","nginx","app-audit","db","firewall","vpn","fail2ban"];
 function date(value:string|null) {
   return value ? new Intl.DateTimeFormat(locale.value,{dateStyle:"medium",timeStyle:"medium",timeZone:props.timezone,calendar:"gregory"}).format(new Date(value)) : "—";
 }

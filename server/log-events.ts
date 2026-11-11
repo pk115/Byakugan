@@ -108,7 +108,7 @@ export function purgeExpiredLogs(now = new Date()) {
 }
 
 // These are investigation candidates, not proof of compromise. Keep routine HTTP errors out.
-export const threatEventNames = [...AUTH_FAILURES, "FIREWALL_DENY"];
+export const threatEventNames = [...AUTH_FAILURES, "FIREWALL_DENY", "IP_BANNED", "HTTP_PROBE"];
 export type LogQuery = { threatOnly?: "true"; source?: string; event?: string; actor?: string; srcIp?: string; result?: string; host?: string; from?: string; to?: string; limit?: number; agentId?: number; severity?: string; search?: string; beforeTime?: string; beforeId?: number };
 export function logFilter(q: LogQuery) {
   const where: string[] = []; const params: unknown[] = [];
