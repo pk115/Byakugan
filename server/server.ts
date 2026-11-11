@@ -1,3 +1,4 @@
+import { evaluateThreatRules, resolveThreatCase, threatCases } from "./threat-rules.js";
 import { threatOverview } from "./threats.js";
 import { activeFindingStatusSql } from "./finding-status.js";
 import { existsSync } from "node:fs";
@@ -287,11 +288,12 @@ app.post("/api/agent/logs",{bodyLimit:2_000_000,config:{rateLimit:{max:120,timeW
   const body=parse(logBatchSchema,request.body,reply);if(!body)return;
   const limit=Date.now()+300000;if(body.events.some(e=>new Date(e.timestamp).getTime()>limit))return reply.code(400).send({error:"Log timestamp is in the future"});
   const result=ingestLogs(agent.id,body.events);
-  return{ok:true,...result,alerts:evaluateLogAlerts(agent.id)};
+  return{ok:true,...result,alerts:evaluateLogAlerts(agent.id,new Date(),false),threatCases:result.accepted?evaluateThreatRules(agent.id):[]};
 });
 const logRoles=["ADMIN","AUDITOR","OPERATOR"];
 const logQuerySchema=z.object({threatOnly:z.literal("true").optional(),source:z.string().max(40).optional(),event:z.string().max(80).optional(),actor:z.string().max(150).optional(),srcIp:z.string().max(64).optional(),result:z.string().max(40).optional(),host:z.string().max(253).optional(),from:z.string().datetime().optional(),to:z.string().datetime().optional(),limit:z.coerce.number().int().min(1).max(1000).optional(),agentId:z.coerce.number().int().positive().optional(),severity:z.enum(["debug","info","notice","warning","error","critical"]).optional(),search:z.string().trim().min(1).max(200).optional(),beforeTime:z.string().datetime().optional(),beforeId:z.coerce.number().int().positive().optional()}).refine(q=>Boolean(q.beforeTime)===Boolean(q.beforeId),{message:"Both cursor fields are required"}).refine(q=>!q.from||!q.to||q.from<=q.to,{message:"Invalid date range"});
 app.get("/api/logs",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Administrator, auditor or operator role required"});const query=parse(logQuerySchema,request.query,reply);if(!query)return;return{events:queryLogs(query)}});
+app.get("/api/threats/cases",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Log access required"});const query=parse(logQuerySchema,request.query,reply);if(!query)return;const rows=threatCases(query);return{cases:rows.slice(0,200),truncated:rows.length>200}});
 app.get("/api/threats/overview",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Log access required"});const query=parse(logQuerySchema,request.query,reply);if(!query)return;return threatOverview(query)});
 app.get("/api/logs/summary",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Administrator, auditor or operator role required"});const hours=Math.min(Math.max(Number((request.query as {hours?:string}).hours)||24,1),24*365);return{hours,summary:logSummary(new Date(Date.now()-hours*3600000).toISOString())}});
 
@@ -377,6 +379,7 @@ app.put("/api/findings/:id",{preHandler:requireAuth},async(request,reply)=>{
   if(!current)return reply.code(404).send({error:"Finding not found"});const now=new Date().toISOString();
   db.prepare(`UPDATE compliance_findings SET status=?,owner=?,due_at=?,resolution_note=?,resolved_at=?,updated_at=? WHERE id=?`)
     .run(body.status,body.owner??null,body.dueAt??null,body.resolutionNote??null,body.status==="RESOLVED"?now:null,now,id);
+  if(body.status==="RESOLVED")resolveThreatCase(id);
   appendAuditEvent(actor(request),"FINDING_WORKFLOW_UPDATED","compliance_finding",id,{previousStatus:current.status,...body});return {ok:true};
 });
 

@@ -73,7 +73,7 @@ const count = (agentId: number, since: string, where: string, ...params: unknown
 
 // Rules run after each batch; a finding resolves on the first batch where its window is clean.
 // ponytail: fixed thresholds, move to app_settings if operators need to tune them.
-export function evaluateLogAlerts(agentId: number, now = new Date()) {
+export function evaluateLogAlerts(agentId: number, now = new Date(), legacyAuth = true) {
   const since15 = new Date(now.getTime() - 15 * 60000).toISOString();
   const since24h = new Date(now.getTime() - 86400000).toISOString();
   const marks = AUTH_FAILURES.map(() => "?").join(",");
@@ -81,7 +81,7 @@ export function evaluateLogAlerts(agentId: number, now = new Date()) {
   const dbFromWan = count(agentId, since15, "event='FIREWALL_DENY' AND json_extract(details_json,'$.rule')='deny-db-from-wan'");
   const backupFailed = count(agentId, since24h, "event='DB_BACKUP_FAILED'");
   const rules = [
-    { key: "log_auth_failures", active: failures >= 10, severity: "HIGH", title: "Repeated authentication failures", explanation: `${failures} failed logins in the last 15 minutes (threshold 10)` },
+    { key: "log_auth_failures", active: legacyAuth && failures >= 10, severity: "HIGH", title: "Repeated authentication failures", explanation: `${failures} failed logins in the last 15 minutes (threshold 10)` },
     { key: "log_db_from_wan", active: dbFromWan >= 20, severity: "HIGH", title: "Database port probed from the internet", explanation: `${dbFromWan} blocked database connections from WAN in the last 15 minutes (threshold 20)` },
     { key: "log_backup_failed", active: backupFailed > 0, severity: "HIGH", title: "Database backup failed", explanation: `${backupFailed} failed database backup event(s) in the last 24 hours` }
   ];

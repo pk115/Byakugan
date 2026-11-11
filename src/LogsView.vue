@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { api } from "./api";
+import ThreatCases from "./ThreatCases.vue";
 import ThreatOverview, { type ThreatOverviewData } from "./ThreatOverview.vue";
 import AppIcon from "./AppIcon.vue";
 import { threatGuidance } from "./threat-guidance";
 import { locale } from "./i18n";
 
 type LogEvent = { id:number; agentId:number; agent:string; source:string; event:string; host:string|null; actor:string|null; srcIp:string|null; result:string|null; severity:string; detailsJson:string; occurredAt:string; receivedAt:string };
-const props = defineProps<{ initialAgentId?:number; timezone:string; threats?:boolean }>();
+const props = defineProps<{ initialAgentId?:number; timezone:string; threats?:boolean; canManage?:boolean }>();
 const agents = ref<Array<{id:number;name:string;hostname:string|null;osName:string|null}>>([]);
 const rows = ref<LogEvent[]>([]);
 const loading = ref(false), error = ref(""), searched = ref(false), more = ref(false);
@@ -15,6 +16,7 @@ const lastUpdated = ref<string|null>(null);
 const expanded = ref<number|null>(null);
 const filters = reactive({ agentId:props.initialAgentId??0, source:"", severity:"", event:"", search:"", actor:"", srcIp:"", result:"", period:"24", from:"", to:"" });
 const overview = ref<ThreatOverviewData|null>(null);
+const appliedQuery = ref("");
 let applied = new URLSearchParams();
 const text = computed(() => locale.value === "th-TH" ? {
   title:"บันทึกเหตุการณ์", subtitle:"ค้นหา Windows, Linux และ log ที่ส่งเข้ามาจากระบบต่าง ๆ", refresh:"รีเฟรช", search:"ค้นหา", searchHint:"เหตุการณ์, เครื่อง, ผู้ใช้, IP หรือรายละเอียด", machine:"เครื่อง / Agent", all:"ทั้งหมด", source:"แหล่งข้อมูล", severity:"ความรุนแรง", event:"เหตุการณ์", period:"ช่วงเวลา", day:"24 ชั่วโมงล่าสุด", week:"7 วันล่าสุด", custom:"กำหนดเอง", from:"ตั้งแต่", to:"ถึง", advanced:"ตัวกรองเพิ่มเติม", actor:"ผู้ใช้", ip:"IP ต้นทาง", result:"ผลลัพธ์", reset:"ล้างตัวกรอง", loading:"กำลังโหลด…", shown:"รายการที่โหลดแล้ว", latest:"อัปเดตล่าสุด", time:"เวลาเกิดเหตุ", detail:"รายละเอียด", received:"เวลารับข้อมูล", more:"โหลดรายการเก่ากว่า", end:"โหลดครบตามเงื่อนไขแล้ว", empty:"ไม่พบเหตุการณ์ตามเงื่อนไข", emptyHint:"ลองขยายช่วงเวลา หรือล้างตัวกรอง หากเพิ่งติดตั้ง Agent ให้รอประมาณ 60 วินาทีแล้วรีเฟรช", help:"ยังไม่มี log จาก Windows?", helpBody:"Agent ต้องทำงานและเปิดส่ง logs โดยมีเหตุการณ์ที่รองรับ เช่น login หรือ service เปลี่ยนสถานะ คำสั่งด้านล่างใช้ดูเหตุการณ์บนเครื่อง Windows โดยไม่ส่งข้อมูล", validation:"กรุณาระบุช่วงเวลาให้ครบและให้เวลาเริ่มก่อนเวลาสิ้นสุด", hostHint:"host รวม Windows/Linux; เลือกเครื่องเพื่อดูเฉพาะเครื่องนั้น", exact:"ตัวกรองเหตุการณ์ ผู้ใช้ และ IP ต้องตรงกับค่าที่บันทึก", failure:"โหลด log ไม่สำเร็จ", retry:"ลองใหม่", detailsEmpty:"ไม่มีรายละเอียดเพิ่มเติม", moreHint:"เรียงตามเวลาเกิดเหตุล่าสุด ครั้งละ 100 รายการ", noResults:"ค้นหาแล้วไม่พบข้อมูล", noAgents:"โหลดรายชื่อเครื่องไม่สำเร็จ ยังค้นหา log ด้วยตัวกรองอื่นได้", filtered:"แก้ตัวกรองแล้วกดค้นหาเพื่อแสดงผลใหม่", timezone:"เขตเวลา"
@@ -59,7 +61,7 @@ async function load(older = false) {
     if (older && last) { q.set("beforeTime",last.occurredAt); q.set("beforeId",String(last.id)); }
     const [result, summary] = await Promise.all([api<{events:LogEvent[]}>(`/api/logs?${q}`),props.threats && !older ? api<ThreatOverviewData>(`/api/threats/overview?${q}`) : Promise.resolve(null)]);
     if (summary) overview.value = summary;
-    if (!older) { applied = q; expanded.value = null; }
+    if (!older) { applied = q; appliedQuery.value = q.toString(); expanded.value = null; }
     rows.value = older ? [...rows.value,...result.events] : result.events;
     more.value = result.events.length === 100;
     searched.value = true; lastUpdated.value = new Date().toISOString();
@@ -101,6 +103,7 @@ onMounted(() => {
     <p v-if="agentError" class="log-note" role="status">{{ text.noAgents }}</p>
     <p v-if="error" class="error-banner" role="alert">{{ error }} <button class="secondary" :disabled="loading" @click="load()">{{ text.retry }}</button></p>
     <ThreatOverview v-if="threats && overview" :data="overview" :timezone="timezone" @source="ip=>{filters.srcIp=ip;load()}" />
+    <ThreatCases v-if="threats && overview" :query="appliedQuery" :can-manage="!!canManage" />
     <section class="panel log-results" :aria-busy="loading">
       <div class="log-results-head" aria-live="polite"><div><strong>{{ text.shown }}: {{ rows.length.toLocaleString(locale) }}</strong><small>{{ text.moreHint }} · {{ text.timezone }}: {{ timezone }}</small></div><small v-if="lastUpdated">{{ text.latest }}: {{ date(lastUpdated) }}</small></div>
       <div v-if="loading && !rows.length" class="empty" role="status">{{ text.loading }}</div>

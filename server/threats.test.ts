@@ -6,6 +6,21 @@ process.env.SUPAPULSE_DATA_DIR=mkdtempSync(join(tmpdir(),"byakugan-threats-"));
 const {db}=await import("./database.js");
 const {ingestLogs}=await import("./log-events.js");
 const {threatOverview}=await import("./threats.js");
+const {evaluateThreatRules,resolveThreatCase}=await import("./threat-rules.js");
+it("groups cases by machine/IP/account, preserves acknowledgement and requires new evidence to reopen",()=>{
+  const id=Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('rules','rules')").run().lastInsertRowid);
+  const now=new Date('2026-11-12T01:00:00Z');
+  const batch=(offset:number,n:number)=>Array.from({length:n},(_,i)=>({source:'host',event:'SSH_LOGIN_FAILED',timestamp:new Date(+now-(offset+i)*1000).toISOString(),actor:'root',srcIp:'192.0.2.9',severity:'warning' as const,details:{}}));
+  ingestLogs(id,batch(0,10));const [finding]=evaluateThreatRules(id,now);expect(finding).toBeTruthy();
+  db.prepare("UPDATE compliance_findings SET status='ACKNOWLEDGED' WHERE id=?").run(finding);
+  expect(evaluateThreatRules(id,now)).toEqual([]);
+  expect(db.prepare('SELECT status FROM compliance_findings WHERE id=?').get(finding)).toEqual({status:'ACKNOWLEDGED'});
+  db.prepare("UPDATE compliance_findings SET status='RESOLVED' WHERE id=?").run(finding);resolveThreatCase(finding);
+  expect(evaluateThreatRules(id,now)).toEqual([]);
+  ingestLogs(id,batch(20,9));expect(evaluateThreatRules(id,now)).toEqual([]);
+  ingestLogs(id,batch(29,1));expect(evaluateThreatRules(id,now)).toEqual([finding]);
+  db.prepare('DELETE FROM agents WHERE id=?').run(id);
+});
 it("aggregates the complete filtered period, not one page, and includes silent agents in coverage",()=>{
   const a=Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('one','one')").run().lastInsertRowid);
   const b=Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('silent','two')").run().lastInsertRowid);

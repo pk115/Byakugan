@@ -753,7 +753,7 @@ onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
         <section v-if="isAdmin && health" class="panel page-panel health-sources"><label>{{ thai ? 'แหล่ง log ที่ต้องส่งต่อเนื่อง (ข้อ 7) — คั่นด้วยจุลภาค เช่น host, nginx, vpn' : 'Log sources expected continuously (item 7) — comma separated, e.g. host, nginx, vpn' }}<input id="log-sources" v-model="logSourcesText" placeholder="host, nginx, vpn, firewall, db"></label><button class="primary" :disabled="busy" @click="saveLogSources">{{ thai ? 'บันทึก' : 'Save' }}</button></section>
       </template>
 
-      <LogsView v-else-if="activeView === 'threats' && canReadLogs" key="threats" threats :timezone="regionalForm.userTimezone==='SYSTEM'?regionalForm.applicationTimezone:regionalForm.userTimezone" />
+      <LogsView v-else-if="activeView === 'threats' && canReadLogs" key="threats" threats :can-manage="session?.user?.role==='ADMIN'||session?.user?.role==='OPERATOR'" :timezone="regionalForm.userTimezone==='SYSTEM'?regionalForm.applicationTimezone:regionalForm.userTimezone" />
       <LogsView v-else-if="activeView === 'logs' && canReadLogs" :key="logAgentId" :initial-agent-id="logAgentId" :timezone="regionalForm.userTimezone==='SYSTEM'?regionalForm.applicationTimezone:regionalForm.userTimezone" />
 
       <template v-else-if="activeView === 'agents'">
