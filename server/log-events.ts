@@ -110,7 +110,7 @@ export function purgeExpiredLogs(now = new Date()) {
 // These are investigation candidates, not proof of compromise. Keep routine HTTP errors out.
 export const threatEventNames = [...AUTH_FAILURES, "FIREWALL_DENY"];
 export type LogQuery = { threatOnly?: "true"; source?: string; event?: string; actor?: string; srcIp?: string; result?: string; host?: string; from?: string; to?: string; limit?: number; agentId?: number; severity?: string; search?: string; beforeTime?: string; beforeId?: number };
-export function queryLogs(q: LogQuery) {
+export function logFilter(q: LogQuery) {
   const where: string[] = []; const params: unknown[] = [];
   if (q.threatOnly === "true") {
     where.push(`l.event IN (${threatEventNames.map(() => "?").join(",")})`);
@@ -131,9 +131,13 @@ export function queryLogs(q: LogQuery) {
   }
   if (q.from) { where.push("l.occurred_at>=?"); params.push(q.from); }
   if (q.to) { where.push("l.occurred_at<=?"); params.push(q.to); }
+  return { sql: where.length ? "WHERE " + where.join(" AND ") : "", params };
+}
+export function queryLogs(q: LogQuery) {
+  const { sql, params } = logFilter(q);
   const limit = Math.min(Math.max(Math.trunc(q.limit ?? 200) || 200, 1), 1000);
   return db.prepare(`SELECT l.id,l.agent_id AS agentId,a.name AS agent,l.source,l.event,l.host,l.actor,l.src_ip AS srcIp,l.result,l.severity,l.details_json AS detailsJson,l.occurred_at AS occurredAt,l.received_at AS receivedAt
-    FROM log_events l JOIN agents a ON a.id=l.agent_id ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY l.occurred_at DESC,l.id DESC LIMIT ?`).all(...params, limit);
+    FROM log_events l JOIN agents a ON a.id=l.agent_id ${sql} ORDER BY l.occurred_at DESC,l.id DESC LIMIT ?`).all(...params, limit);
 }
 
 export function logSummary(since: string) {

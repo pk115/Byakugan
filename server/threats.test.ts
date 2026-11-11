@@ -1,0 +1,21 @@
+import {mkdtempSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {it,expect} from "vitest";
+process.env.SUPAPULSE_DATA_DIR=mkdtempSync(join(tmpdir(),"byakugan-threats-"));
+const {db}=await import("./database.js");
+const {ingestLogs}=await import("./log-events.js");
+const {threatOverview}=await import("./threats.js");
+it("aggregates the complete filtered period, not one page, and includes silent agents in coverage",()=>{
+  const a=Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('one','one')").run().lastInsertRowid);
+  const b=Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('silent','two')").run().lastInsertRowid);
+  ingestLogs(a,Array.from({length:105},(_,i)=>({source:"host",event:"LOGIN_FAILED",timestamp:"2026-11-12T00:00:00.000Z",srcIp:"192.0.2.1",actor:`u${i}`,severity:"warning",details:{}})) as Parameters<typeof ingestLogs>[1]);
+  ingestLogs(a,[{source:"nginx",event:"HTTP_REQUEST",timestamp:"2026-11-12T00:00:00.000Z",severity:"error",details:{status:500}}]);
+  const result=threatOverview({agentId:a,limit:1,from:"2026-11-12T00:00:00.000Z",to:"2026-11-12T23:59:59.000Z"});
+  expect(result.summary).toEqual({events:105,ips:1,agents:1,blocked:0});
+  expect(result.sources).toHaveLength(1);
+  expect(result.coverage).toHaveLength(1);
+  expect(threatOverview({agentId:b}).summary).toMatchObject({events:0});
+  expect(threatOverview({}).coverage).toHaveLength(2);
+  expect(threatOverview({srcIp:"192.0.2.2"}).summary).toMatchObject({events:0});
+});
