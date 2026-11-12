@@ -6,7 +6,7 @@ process.env.SUPAPULSE_DATA_DIR=mkdtempSync(join(tmpdir(),"byakugan-threats-"));
 const {db}=await import("./database.js");
 const {ingestLogs}=await import("./log-events.js");
 const {threatOverview}=await import("./threats.js");
-const {evaluateThreatRules,resolveThreatCase}=await import("./threat-rules.js");
+const {evaluateThreatRules,resolveThreatCase,caseJourney}=await import("./threat-rules.js");
 const {threatPolicy,excepted}=await import("./threat-policy.js");
 it("creates one IDS case per sensor/IP/signature and counts only explicit block outcomes",()=>{
   const id=Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('sensor','sensor')").run().lastInsertRowid);
@@ -14,6 +14,19 @@ it("creates one IDS case per sensor/IP/signature and counts only explicit block 
   const events=['detected','blocked'].map(result=>({source:'suricata',event:'IDS_ALERT',timestamp:now.toISOString(),srcIp:'192.0.2.30',result,severity:'critical' as const,details:{signature_id:123,dst_ip:'10.0.0.5'}}));
   ingestLogs(id,events);expect(evaluateThreatRules(id,now)).toHaveLength(1);expect(evaluateThreatRules(id,now)).toEqual([]);
   expect(threatOverview({agentId:id}).summary).toMatchObject({events:2,blocked:1});
+  db.prepare('DELETE FROM agents WHERE id=?').run(id);
+});
+it("reopens acknowledged IDS cases only on severity escalation and includes related evidence",()=>{
+  const id=Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('escalate','escalate')").run().lastInsertRowid);
+  const now=new Date('2026-11-12T01:00:00Z');
+  const event={source:'suricata',event:'IDS_ALERT',timestamp:now.toISOString(),srcIp:'192.0.2.31',result:'detected',severity:'warning' as const,details:{signature_id:55}};
+  ingestLogs(id,[event]);const [finding]=evaluateThreatRules(id,now);
+  db.prepare("UPDATE compliance_findings SET status='ACKNOWLEDGED' WHERE id=?").run(finding);
+  ingestLogs(id,[{...event,severity:'critical',details:{signature_id:55,sequence:2}}]);
+  expect(evaluateThreatRules(id,now)).toEqual([finding]);
+  expect(db.prepare('SELECT status,severity FROM compliance_findings WHERE id=?').get(finding)).toEqual({status:'OPEN',severity:'CRITICAL'});
+  ingestLogs(id,[{...event,event:'LOGIN_SUCCESS',timestamp:new Date(+now+60000).toISOString(),severity:'info',details:{}}]);
+  expect(caseJourney(finding)?.events).toHaveLength(3);
   db.prepare('DELETE FROM agents WHERE id=?').run(id);
 });
 it("applies thresholds and expiring exceptions without deleting evidence",()=>{

@@ -25,20 +25,21 @@ export function evaluateThreatRules(agentId:number,now=new Date()) {
   return db.transaction(()=>{
     const opened:number[]=[];
     for(const rule of definitions){
-      const groups=db.prepare(`SELECT COALESCE(src_ip,'') AS ip,${rule.actor} AS account,${rule.count} AS n,MIN(id) AS firstId,MAX(id) AS lastId FROM log_events WHERE agent_id=? AND occurred_at BETWEEN ? AND ? AND ${rule.where} GROUP BY COALESCE(src_ip,''),${rule.actor} HAVING ${rule.count}>=?`).all(agentId,since,stamp,rule.threshold) as Array<{ip:string;account:string;n:number;firstId:number;lastId:number}>;
+      const groups=db.prepare(`SELECT COALESCE(src_ip,'') AS ip,${rule.actor} AS account,${rule.count} AS n,MIN(id) AS firstId,MAX(id) AS lastId,MAX(CASE WHEN event='IDS_ALERT' AND severity='critical' THEN 1 ELSE 0 END) AS critical FROM log_events WHERE agent_id=? AND occurred_at BETWEEN ? AND ? AND ${rule.where} GROUP BY COALESCE(src_ip,''),${rule.actor} HAVING ${rule.count}>=?`).all(agentId,since,stamp,rule.threshold) as Array<{ip:string;account:string;n:number;firstId:number;lastId:number;critical:number}>;
       for(const g of groups){
         if(excepted(policy,agentId,g.ip,now))continue;
         const key=rule.prefix+createHash("sha256").update(JSON.stringify([g.ip,g.account])).digest("hex").slice(0,32);
-        const old=db.prepare(`SELECT f.id,f.status,c.handled_through AS handled FROM compliance_findings f JOIN threat_cases c ON c.finding_id=f.id WHERE f.agent_id=? AND f.finding_key=?`).get(agentId,key) as {id:number;status:string;handled:number}|undefined;
+        const old=db.prepare(`SELECT f.id,f.status,f.severity,c.handled_through AS handled FROM compliance_findings f JOIN threat_cases c ON c.finding_id=f.id WHERE f.agent_id=? AND f.finding_key=?`).get(agentId,key) as {id:number;status:string;severity:string;handled:number}|undefined;
         if(old?.status==='RESOLVED'){
           const fresh=db.prepare(`SELECT ${rule.count} AS n,MIN(id) AS firstId FROM log_events WHERE agent_id=? AND id>? AND occurred_at BETWEEN ? AND ? AND COALESCE(src_ip,'')=? AND ${rule.actor}=? AND ${rule.where}`).get(agentId,old.handled,since,stamp,g.ip,g.account) as {n:number;firstId:number};
           if(fresh.n<rule.threshold)continue;g.firstId=fresh.firstId;g.n=fresh.n;
         }
+        const severity=g.critical?"CRITICAL":"HIGH",escalated=!!old&&old.severity!=="CRITICAL"&&severity==="CRITICAL";
         const explanation=`${rule.rule}: ${g.n} ${rule.rule==='PORT_SCAN'?'distinct denied ports':'events'} / ${policy.windowMinutes} min (threshold ${rule.threshold}); source ${g.ip||'unknown'}, account ${g.account||'unknown'}. Review evidence; compromise is not established.`;
-        const id=old?.id??Number(db.prepare(`INSERT INTO compliance_findings(agent_id,finding_key,category,severity,status,title,explanation,first_detected_at,last_detected_at) VALUES(?,?,'LOG','HIGH','OPEN',?,?,?,?)`).run(agentId,key,rule.rule,explanation,stamp,stamp).lastInsertRowid);
-        if(old)db.prepare(`UPDATE compliance_findings SET status=CASE WHEN status='RESOLVED' THEN 'OPEN' ELSE status END,explanation=?,last_detected_at=?,resolved_at=NULL WHERE id=?`).run(explanation,stamp,id);
+        const id=old?.id??Number(db.prepare(`INSERT INTO compliance_findings(agent_id,finding_key,category,severity,status,title,explanation,first_detected_at,last_detected_at) VALUES(?,?,'LOG',?,'OPEN',?,?,?,?)`).run(agentId,key,severity,rule.rule,explanation,stamp,stamp).lastInsertRowid);
+        if(old)db.prepare(`UPDATE compliance_findings SET status=CASE WHEN status='RESOLVED' OR ? THEN 'OPEN' ELSE status END,severity=?,explanation=?,last_detected_at=?,resolved_at=NULL WHERE id=?`).run(escalated?1:0,severity,explanation,stamp,id);
         db.prepare(`INSERT INTO threat_cases(finding_id,agent_id,rule,src_ip,actor,first_log_id,last_log_id,evidence_count) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(finding_id) DO UPDATE SET last_log_id=excluded.last_log_id,evidence_count=excluded.evidence_count,first_log_id=CASE WHEN threat_cases.handled_through>=threat_cases.last_log_id THEN excluded.first_log_id ELSE threat_cases.first_log_id END`).run(id,agentId,rule.rule,g.ip,g.account,g.firstId,g.lastId,g.n);
-        if(!old||old.status==='RESOLVED'){
+        if(!old||old.status==='RESOLVED'||escalated){
           opened.push(id);appendAuditEvent(null,'THREAT_CASE_OPENED','finding',id,{agentId,rule:rule.rule,firstLogId:g.firstId,lastLogId:g.lastId});
           if(policy.notifications)db.prepare('INSERT OR IGNORE INTO threat_notification_queue(finding_id) VALUES(?)').run(id);
         }

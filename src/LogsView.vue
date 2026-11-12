@@ -105,9 +105,9 @@ onMounted(() => {
     <p v-if="agentError" class="log-note" role="status">{{ text.noAgents }}</p>
     <p v-if="error" class="error-banner" role="alert">{{ error }} <button class="secondary" :disabled="loading" @click="load()">{{ text.retry }}</button></p>
     <ThreatOverview v-if="threats && overview" :data="overview" :timezone="timezone" @source="ip=>{filters.srcIp=ip;load()}" />
-    <ThreatMap v-if="threats && overview" :query="appliedQuery" :is-admin="!!isAdmin" :agents="agents" :timeline="overview.timeline" />
+    <ThreatMap v-if="threats && overview" :key="'map-'+lastUpdated" :query="appliedQuery" :is-admin="!!isAdmin" :agents="agents" :timeline="overview.timeline" />
     <ThreatPolicy v-if="threats" :is-admin="!!isAdmin" :agents="agents" />
-    <ThreatCases v-if="threats && overview" :query="appliedQuery" :can-manage="!!canManage" />
+    <ThreatCases v-if="threats && overview" :key="'cases-'+lastUpdated" :query="appliedQuery" :can-manage="!!canManage" />
     <section class="panel log-results" :aria-busy="loading">
       <div class="log-results-head" aria-live="polite"><div><strong>{{ text.shown }}: {{ rows.length.toLocaleString(locale) }}</strong><small>{{ text.moreHint }} · {{ text.timezone }}: {{ timezone }}</small></div><small v-if="lastUpdated">{{ text.latest }}: {{ date(lastUpdated) }}</small></div>
       <div v-if="loading && !rows.length" class="empty" role="status">{{ text.loading }}</div>

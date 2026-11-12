@@ -1,0 +1,23 @@
+import {mkdtempSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {it,expect,vi} from 'vitest';
+vi.mock('./notifications.js',()=>({dispatchSecurityNotification:vi.fn(async()=>{})}));
+process.env.SUPAPULSE_DATA_DIR=mkdtempSync(join(tmpdir(),'byakugan-threat-notify-'));
+const {db}=await import('./database.js');
+const {threatPolicy}=await import('./threat-policy.js');
+const {flushThreatNotifications}=await import('./threat-notifications.js');
+const {dispatchSecurityNotification}=await import('./notifications.js');
+it('groups only open cases once, respects cooldown and sends no raw evidence',async()=>{
+  const a=Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('notify','notify')").run().lastInsertRowid);
+  db.prepare("INSERT INTO notifications(name,type,encrypted_config,enabled) VALUES('fixture','WEBHOOK','not-a-real-secret',1)").run();
+  const make=(key:string,status='OPEN')=>{const id=Number(db.prepare("INSERT INTO compliance_findings(agent_id,finding_key,category,severity,status,title,explanation,first_detected_at,last_detected_at) VALUES(?,?,'LOG','HIGH',?,'test','PRIVATE_RAW_EVIDENCE',?,?)").run(a,key,status,new Date().toISOString(),new Date().toISOString()).lastInsertRowid);db.prepare('INSERT INTO threat_notification_queue(finding_id) VALUES(?)').run(id);return id;};
+  const first=make('one'),second=make('two');make('ack','ACKNOWLEDGED');
+  await flushThreatNotifications();expect(dispatchSecurityNotification).not.toHaveBeenCalled();
+  db.prepare("INSERT INTO app_settings(key,value) VALUES('threat_policy',?)").run(JSON.stringify({...threatPolicy(),notifications:true}));
+  await flushThreatNotifications();expect(dispatchSecurityNotification).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(dispatchSecurityNotification).mock.calls[0][1]).toContain(`#${first}, #${second}`);
+  expect(vi.mocked(dispatchSecurityNotification).mock.calls[0][1]).not.toContain('PRIVATE_RAW_EVIDENCE');
+  make('next');await flushThreatNotifications();expect(dispatchSecurityNotification).toHaveBeenCalledTimes(1);
+  db.prepare("DELETE FROM app_settings WHERE key='threat_notification_last'").run();await flushThreatNotifications();expect(dispatchSecurityNotification).toHaveBeenCalledTimes(2);
+});

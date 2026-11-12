@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {parseNpmLine,parseUfwLine,parseFail2banLine,classifyWebEvent,parseSuricataLine} from './security-log-parsers.mjs';
 test('NPM preserves effective client IP and detects probes, not ordinary 404s',()=>{
  const line='[12/Nov/2026:10:00:00 +0700] - - 404 - GET https example.test "/.env" [Client 192.0.2.9] [Length 12] [Gzip -] [Sent-to web] "curl" "-"';
- const e=parseNpmLine(line,'proxy');assert.equal(e.srcIp,'192.0.2.9');assert.equal(e.event,'HTTP_PROBE');assert.equal(e.timestamp,'2026-11-12T03:00:00.000Z');
+ const e=parseNpmLine(line,'proxy');assert.equal(parseNpmLine(line.replace('] - - 404','] 404'),'proxy').event,'HTTP_PROBE');assert.equal(e.srcIp,'192.0.2.9');assert.equal(e.event,'HTTP_PROBE');assert.equal(e.timestamp,'2026-11-12T03:00:00.000Z');
  assert.equal(parseNpmLine(line.replace('/.env','/missing'),'proxy').event,'HTTP_REQUEST');
  assert.equal(parseNpmLine(line.replace('192.0.2.9','spoofed, 10.0.0.1'),'proxy'),null);
  assert.equal(classifyWebEvent({source:'nginx',timestamp:e.timestamp,srcIp:e.srcIp,details:{request_uri:'/%2e%2e/etc/passwd',method:'GET',status:403}}).event,'HTTP_PROBE');

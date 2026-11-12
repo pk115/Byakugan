@@ -8,7 +8,7 @@ function webEvent({time,ip,method,path,status,host}){
   return {source:'nginx',event:probe?'HTTP_PROBE':'HTTP_REQUEST',timestamp:time,host,srcIp:ip,result:String(status),severity:probe?'warning':Number(status)>=500?'error':'info',details:{method,request_uri:cut(path),status:Number(status),...(probe?{detection:'sensitive-path-probe',confidence:'heuristic'}:{})}};
 }
 export function parseNpmLine(line,host){
-  const m=/^\[([^\]]+)\] .*? (\d{3}) - (\S+) \S+ (\S+) "([^"]*)" \[Client ([^\]]+)\]/.exec(line);
+  const m=/^\[([^\]]+)\] (?:\S+ \S+ )?(\d{3}) - (\S+) \S+ (\S+) "([^"]*)" \[Client ([^\]]+)\]/.exec(line);
   if(!m)return null;
   const t=/^(\d{2})\/(\w{3})\/(\d{4}):([\d:]+) ([+-]\d{2})(\d{2})$/.exec(m[1]);if(!t)return null;
   const month=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].indexOf(t[2])+1;
