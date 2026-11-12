@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { api } from "./api";
+import ThreatMap from "./ThreatMap.vue";
 import ThreatCases from "./ThreatCases.vue";
 import ThreatOverview, { type ThreatOverviewData } from "./ThreatOverview.vue";
 import AppIcon from "./AppIcon.vue";
@@ -8,7 +9,7 @@ import { threatGuidance } from "./threat-guidance";
 import { locale } from "./i18n";
 
 type LogEvent = { id:number; agentId:number; agent:string; source:string; event:string; host:string|null; actor:string|null; srcIp:string|null; result:string|null; severity:string; detailsJson:string; occurredAt:string; receivedAt:string };
-const props = defineProps<{ initialAgentId?:number; timezone:string; threats?:boolean; canManage?:boolean }>();
+const props = defineProps<{ initialAgentId?:number; timezone:string; threats?:boolean; canManage?:boolean; isAdmin?:boolean }>();
 const agents = ref<Array<{id:number;name:string;hostname:string|null;osName:string|null}>>([]);
 const rows = ref<LogEvent[]>([]);
 const loading = ref(false), error = ref(""), searched = ref(false), more = ref(false);
@@ -103,6 +104,7 @@ onMounted(() => {
     <p v-if="agentError" class="log-note" role="status">{{ text.noAgents }}</p>
     <p v-if="error" class="error-banner" role="alert">{{ error }} <button class="secondary" :disabled="loading" @click="load()">{{ text.retry }}</button></p>
     <ThreatOverview v-if="threats && overview" :data="overview" :timezone="timezone" @source="ip=>{filters.srcIp=ip;load()}" />
+    <ThreatMap v-if="threats && overview" :query="appliedQuery" :is-admin="!!isAdmin" :agents="agents" :timeline="overview.timeline" />
     <ThreatCases v-if="threats && overview" :query="appliedQuery" :can-manage="!!canManage" />
     <section class="panel log-results" :aria-busy="loading">
       <div class="log-results-head" aria-live="polite"><div><strong>{{ text.shown }}: {{ rows.length.toLocaleString(locale) }}</strong><small>{{ text.moreHint }} · {{ text.timezone }}: {{ timezone }}</small></div><small v-if="lastUpdated">{{ text.latest }}: {{ date(lastUpdated) }}</small></div>

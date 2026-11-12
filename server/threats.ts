@@ -1,3 +1,4 @@
+import {geoReader,locate,threatLocations} from "./threat-geo.js";
 import { db } from "./database.js";
 import { logFilter, type LogQuery } from "./log-events.js";
 
@@ -19,4 +20,11 @@ export function threatOverview(query: LogQuery) {
       FROM agents a ${query.agentId ? "WHERE a.id=?" : ""} ORDER BY a.id LIMIT 501`).all(...(query.agentId ? [query.agentId] : []));
     return {summary,sources,types,timeline,coverage:coverage.slice(0,500),coverageTruncated:coverage.length>500,generatedAt:new Date().toISOString()};
   })();
+}
+
+export async function threatMap(query:LogQuery){
+  const {sql,params}=logFilter({...query,threatOnly:"true",beforeId:undefined,beforeTime:undefined});
+  const rows=db.prepare(`SELECT l.agent_id AS agentId,a.name AS agent,l.src_ip AS ip,COUNT(*) AS events FROM log_events l JOIN agents a ON a.id=l.agent_id ${sql} GROUP BY l.agent_id,l.src_ip ORDER BY events DESC,l.agent_id,l.src_ip LIMIT 101`).all(...params) as Array<{agentId:number;agent:string;ip:string|null;events:number}>;
+  const reader=await geoReader();
+  return {available:!!reader,routes:rows.slice(0,100).map(row=>({...row,location:locate(row.ip,reader)})),truncated:rows.length>100,targets:threatLocations()};
 }
