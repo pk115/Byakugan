@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { api } from "./api";
+import ThreatPolicy from "./ThreatPolicy.vue";
 import ThreatMap from "./ThreatMap.vue";
 import ThreatCases from "./ThreatCases.vue";
 import ThreatOverview, { type ThreatOverviewData } from "./ThreatOverview.vue";
@@ -105,6 +106,7 @@ onMounted(() => {
     <p v-if="error" class="error-banner" role="alert">{{ error }} <button class="secondary" :disabled="loading" @click="load()">{{ text.retry }}</button></p>
     <ThreatOverview v-if="threats && overview" :data="overview" :timezone="timezone" @source="ip=>{filters.srcIp=ip;load()}" />
     <ThreatMap v-if="threats && overview" :query="appliedQuery" :is-admin="!!isAdmin" :agents="agents" :timeline="overview.timeline" />
+    <ThreatPolicy v-if="threats" :is-admin="!!isAdmin" :agents="agents" />
     <ThreatCases v-if="threats && overview" :query="appliedQuery" :can-manage="!!canManage" />
     <section class="panel log-results" :aria-busy="loading">
       <div class="log-results-head" aria-live="polite"><div><strong>{{ text.shown }}: {{ rows.length.toLocaleString(locale) }}</strong><small>{{ text.moreHint }} · {{ text.timezone }}: {{ timezone }}</small></div><small v-if="lastUpdated">{{ text.latest }}: {{ date(lastUpdated) }}</small></div>

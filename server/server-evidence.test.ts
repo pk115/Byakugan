@@ -24,7 +24,7 @@ const rows = (report: ReturnType<typeof data>, name: string) => report.sheets.fi
 describe("scoped server evidence", () => {
   it("includes all topics, no credential columns, and honest gaps", () => {
     const report = data();
-    expect(report.sheets.length).toBe(26);
+    expect(report.sheets.length).toBe(28);
     expect(rows(report,"Servers")).toHaveLength(2);
     expect(rows(report,"Backups")).toHaveLength(1);
     expect(JSON.stringify(report)).not.toContain("secret-one");

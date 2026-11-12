@@ -1,5 +1,7 @@
+import {threatPolicy,threatPolicySchema} from "./threat-policy.js";
+import {flushThreatNotifications} from "./threat-notifications.js";
 import { threatLocations } from "./threat-geo.js";
-import { evaluateThreatRules, resolveThreatCase, threatCases } from "./threat-rules.js";
+import { evaluateThreatRules, resolveThreatCase, threatCases, caseJourney } from "./threat-rules.js";
 import { threatOverview, threatMap } from "./threats.js";
 import { activeFindingStatusSql } from "./finding-status.js";
 import { existsSync } from "node:fs";
@@ -294,6 +296,9 @@ app.post("/api/agent/logs",{bodyLimit:2_000_000,config:{rateLimit:{max:120,timeW
 const logRoles=["ADMIN","AUDITOR","OPERATOR"];
 const logQuerySchema=z.object({threatOnly:z.literal("true").optional(),source:z.string().max(40).optional(),event:z.string().max(80).optional(),actor:z.string().max(150).optional(),srcIp:z.string().max(64).optional(),result:z.string().max(40).optional(),host:z.string().max(253).optional(),from:z.string().datetime().optional(),to:z.string().datetime().optional(),limit:z.coerce.number().int().min(1).max(1000).optional(),agentId:z.coerce.number().int().positive().optional(),severity:z.enum(["debug","info","notice","warning","error","critical"]).optional(),search:z.string().trim().min(1).max(200).optional(),beforeTime:z.string().datetime().optional(),beforeId:z.coerce.number().int().positive().optional()}).refine(q=>Boolean(q.beforeTime)===Boolean(q.beforeId),{message:"Both cursor fields are required"}).refine(q=>!q.from||!q.to||q.from<=q.to,{message:"Invalid date range"});
 app.get("/api/logs",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Administrator, auditor or operator role required"});const query=parse(logQuerySchema,request.query,reply);if(!query)return;return{events:queryLogs(query)}});
+app.get("/api/threats/policy",{preHandler:requireAuth},async(request,reply)=>{if(!logRoles.includes(currentUser(request)?.role??""))return reply.code(403).send({error:"Log access required"});return threatPolicy()});
+app.put("/api/threats/policy",{preHandler:requireAuth},async(request,reply)=>{if(currentUser(request)?.role!=="ADMIN")return reply.code(403).send({error:"Administrator required"});const body=parse(threatPolicySchema,request.body,reply);if(!body)return;for(const e of body.exceptions){if(e.agentId&&!db.prepare("SELECT id FROM agents WHERE id=?").get(e.agentId))return reply.code(400).send({error:"Exception agent not found"});}db.prepare("INSERT INTO app_settings(key,value) VALUES('threat_policy',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(body));if(!body.notifications)db.prepare('DELETE FROM threat_notification_queue').run();appendAuditEvent(actor(request),"THREAT_POLICY_UPDATED","settings",null,body);return threatPolicy()});
+app.get("/api/threats/cases/:id/evidence",{preHandler:requireAuth},async(request,reply)=>{if(!logRoles.includes(currentUser(request)?.role??""))return reply.code(403).send({error:"Log access required"});const result=caseJourney(Number((request.params as {id:string}).id));return result??reply.code(404).send({error:"Case not found"})});
 app.get("/api/threats/cases",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Log access required"});const query=parse(logQuerySchema,request.query,reply);if(!query)return;const rows=threatCases(query);return{cases:rows.slice(0,200),truncated:rows.length>200}});
 app.get("/api/threats/map",{preHandler:requireAuth},async(request,reply)=>{const user=currentUser(request);if(!user||!logRoles.includes(user.role))return reply.code(403).send({error:"Log access required"});const query=parse(logQuerySchema,request.query,reply);if(!query)return;return threatMap(query)});
 app.put("/api/threats/locations/:id",{preHandler:requireAuth},async(request,reply)=>{if(currentUser(request)?.role!=="ADMIN")return reply.code(403).send({error:"Administrator required"});const id=Number((request.params as {id:string}).id);const body=parse(z.object({label:z.string().trim().min(1).max(100),latitude:z.number().min(-90).max(90),longitude:z.number().min(-180).max(180)}),request.body,reply);if(!body)return;if(!db.prepare("SELECT id FROM agents WHERE id=?").get(id))return reply.code(404).send({error:"Agent not found"});db.prepare("INSERT INTO threat_locations(agent_id,label,latitude,longitude) VALUES(?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET label=excluded.label,latitude=excluded.latitude,longitude=excluded.longitude").run(id,body.label,body.latitude,body.longitude);appendAuditEvent(actor(request),"THREAT_LOCATION_UPDATED","agent",id,body);return{locations:threatLocations()}});
@@ -380,6 +385,7 @@ app.put("/api/findings/:id",{preHandler:requireAuth},async(request,reply)=>{
   const id=Number((request.params as {id:string}).id);const body=parse(findingWorkflowSchema,request.body,reply);if(!body)return;
   const current=db.prepare("SELECT id,status FROM compliance_findings WHERE id=?").get(id) as {id:number;status:string}|undefined;
   if(!current)return reply.code(404).send({error:"Finding not found"});const now=new Date().toISOString();
+  if(body.status==="RESOLVED"&&!body.resolutionNote?.trim()&&db.prepare('SELECT finding_id FROM threat_cases WHERE finding_id=?').get(id))return reply.code(400).send({error:"Threat case resolution requires an investigation note"});
   db.prepare(`UPDATE compliance_findings SET status=?,owner=?,due_at=?,resolution_note=?,resolved_at=?,updated_at=? WHERE id=?`)
     .run(body.status,body.owner??null,body.dueAt??null,body.resolutionNote??null,body.status==="RESOLVED"?now:null,now,id);
   if(body.status==="RESOLVED")resolveThreatCase(id);
@@ -947,7 +953,7 @@ if (existsSync(webRoot)) {
   app.get("/assets/*", async (request, reply) => {
     const asset = (request.params as { "*": string })["*"];
     if (!/^[a-zA-Z0-9_.-]+$/.test(asset)) return reply.code(404).send({ error: "Not found" });
-    const type = asset.endsWith(".css") ? "text/css" : asset.endsWith(".js") ? "text/javascript" : "application/octet-stream";
+    const type = asset.endsWith(".css") ? "text/css" : asset.endsWith(".js") ? "text/javascript" : asset.endsWith(".svg") ? "image/svg+xml" : "application/octet-stream";
     try {
       return reply.type(type).send(await readFile(join(webRoot, "assets", asset)));
     } catch {
@@ -961,7 +967,9 @@ if (existsSync(webRoot)) {
   });
 }
 
-app.addHook("onClose", async () => stopScheduler());
+const threatNotificationTimer=config.maintenanceMode?null:setInterval(()=>void flushThreatNotifications().catch(error=>app.log.error(error)),60000);
+threatNotificationTimer?.unref();
+app.addHook("onClose", async () => {if(threatNotificationTimer)clearInterval(threatNotificationTimer);stopScheduler();});
 if(!config.maintenanceMode)startScheduler();
 
 try {

@@ -7,6 +7,21 @@ const {db}=await import("./database.js");
 const {ingestLogs}=await import("./log-events.js");
 const {threatOverview}=await import("./threats.js");
 const {evaluateThreatRules,resolveThreatCase}=await import("./threat-rules.js");
+const {threatPolicy,excepted}=await import("./threat-policy.js");
+it("applies thresholds and expiring exceptions without deleting evidence",()=>{
+  const id=Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('ports','ports')").run().lastInsertRowid);
+  const now=new Date('2026-11-12T01:00:00Z'),policy={...threatPolicy(),portThreshold:3,notifications:true,exceptions:[{ip:'192.0.2.2',agentId:id,reason:'Authorized test source',expiresAt:'2026-11-12T02:00:00.000Z'}]};
+  db.prepare("INSERT INTO app_settings(key,value) VALUES('threat_policy',?)").run(JSON.stringify(policy));
+  ingestLogs(id,[22,80,443].map(port=>({source:'firewall',event:'FIREWALL_DENY',timestamp:now.toISOString(),srcIp:'192.0.2.2',severity:'warning',details:{dst_port:port}})) as Parameters<typeof ingestLogs>[1]);
+  expect(evaluateThreatRules(id,now)).toEqual([]);
+  expect(excepted(policy,id,'192.0.2.2',new Date('2026-11-12T03:00:00Z'))).toBe(false);
+  policy.exceptions=[];db.prepare("UPDATE app_settings SET value=? WHERE key='threat_policy'").run(JSON.stringify(policy));
+  expect(evaluateThreatRules(id,now)).toHaveLength(1);
+  expect(evaluateThreatRules(id,now)).toEqual([]);
+  expect((db.prepare('SELECT COUNT(*) AS n FROM threat_notification_queue').get() as {n:number}).n).toBe(1);
+  expect((db.prepare('SELECT COUNT(*) AS n FROM log_events WHERE agent_id=?').get(id) as {n:number}).n).toBe(3);
+  db.prepare("DELETE FROM app_settings WHERE key='threat_policy'").run();db.prepare('DELETE FROM agents WHERE id=?').run(id);
+});
 it("groups cases by machine/IP/account, preserves acknowledgement and requires new evidence to reopen",()=>{
   const id=Number(db.prepare("INSERT INTO agents(name,token_hash) VALUES('rules','rules')").run().lastInsertRowid);
   const now=new Date('2026-11-12T01:00:00Z');

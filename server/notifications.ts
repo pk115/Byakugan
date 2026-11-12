@@ -86,7 +86,7 @@ export async function dispatchHealthNotification(event: "HEALTH_WARNING" | "HEAL
   }));
 }
 
-export async function dispatchSecurityNotification(event:"VULNERABILITY_NEW"|"SCAN_FAILED",text:string){
+export async function dispatchSecurityNotification(event:"VULNERABILITY_NEW"|"SCAN_FAILED"|"THREAT_DETECTED",text:string){
   const rows=db.prepare("SELECT * FROM notifications WHERE enabled=1").all() as NotificationRow[];
   await Promise.all(rows.map(async row=>{let success=1,errorMessage:null|string=null;try{await deliver(row,JSON.parse(decrypt(row.encrypted_config)) as NotificationConfig,text)}catch(error){success=0;errorMessage=error instanceof Error?error.message:"Notification failed"}db.prepare("INSERT INTO notification_deliveries(notification_id,project_id,event,success,error_message) VALUES(?,NULL,?,?,?)").run(row.id,event,success,errorMessage)}));
 }
