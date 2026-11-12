@@ -31,3 +31,17 @@ export function parseFail2banLine(line,host){
   if(!m||!isIP(m[4]))return null;const time=timestamp(m[1].replace(' ','T'));if(!time)return null;
   return {source:'fail2ban',event:m[3]==='Ban'?'IP_BANNED':'IP_UNBANNED',timestamp:time,host,srcIp:m[4],result:m[3]==='Ban'?'blocked':'unblocked',severity:m[3]==='Ban'?'warning':'info',details:{jail:cut(m[2])}};
 }
+
+export function parseSuricataLine(line,host){
+  let r;try{r=JSON.parse(line);}catch{return null;}
+  if(!r||r.event_type!=='alert'||!r.alert||!isIP(r.src_ip??'')||!isIP(r.dest_ip??''))return null;
+  const time=timestamp(r.timestamp);if(!time||!Number.isInteger(r.alert.signature_id))return null;
+  const blocked=r.verdict?.action==='drop'||r.verdict?.action==='reject'||r.alert.action==='blocked';
+  const port=v=>Number.isInteger(v)&&v>=0&&v<=65535?v:null;
+  return {source:'suricata',event:'IDS_ALERT',timestamp:time,host,srcIp:r.src_ip,result:blocked?'blocked':'detected',severity:Number(r.alert.severity)===1?'critical':Number(r.alert.severity)===2?'error':'warning',details:{
+    signature_id:r.alert.signature_id,signature:cut(r.alert.signature),category:cut(r.alert.category),signature_severity:Number(r.alert.severity)||0,
+    action:cut(r.alert.action),verdict:cut(r.verdict?.action),dst_ip:r.dest_ip,dst_port:port(r.dest_port),src_port:port(r.src_port),protocol:cut(r.proto),
+    flow_id:cut(/"flow_id"\s*:\s*(\d+)/.exec(line)?.[1]??r.flow_id),direction:cut(r.direction),
+    alert_source_ip:cut(r.alert.source?.ip),alert_target_ip:cut(r.alert.target?.ip)
+  }};
+}

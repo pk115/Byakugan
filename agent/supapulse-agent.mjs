@@ -71,6 +71,7 @@ const logConfig={
   stateDir:process.env.SUPAPULSE_STATE_DIR||"/var/lib/byakugan-agent",
   authLog:await firstExisting([process.env.SUPAPULSE_AUTH_LOG,"/var/log/auth.log","/var/log/secure","/host/var/log/auth.log","/host/var/log/secure"]),
   nginxLog:process.env.SUPAPULSE_NGINX_LOG,
+  suricataLog:process.env.SUPAPULSE_SURICATA_LOG,
   npmLog:process.env.SUPAPULSE_NPM_LOG,ufwLog:process.env.SUPAPULSE_UFW_LOG,fail2banLog:process.env.SUPAPULSE_FAIL2BAN_LOG,
   journal:process.env.SUPAPULSE_JOURNAL!=="0",journalDir:process.env.SUPAPULSE_JOURNAL_DIR||(await exists("/host/var/log/journal")?"/host/var/log/journal":undefined),
   backfill:process.env.SUPAPULSE_LOG_BACKFILL==="1"

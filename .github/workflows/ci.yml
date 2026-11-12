@@ -29,6 +29,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: node --test agent/log-collector.test.mjs agent/security-log-parsers.test.mjs
       - run: npm test
       - run: npm run typecheck
       - run: npm run build

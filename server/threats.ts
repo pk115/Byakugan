@@ -6,7 +6,7 @@ export function threatOverview(query: LogQuery) {
   const {sql,params} = logFilter({...query,threatOnly:"true",beforeId:undefined,beforeTime:undefined});
   return db.transaction(() => {
     const summary = db.prepare(`SELECT COUNT(*) AS events,COUNT(DISTINCT NULLIF(l.src_ip,'')) AS ips,
-      COUNT(DISTINCT l.agent_id) AS agents,COALESCE(SUM(l.event='FIREWALL_DENY'),0) AS blocked
+      COUNT(DISTINCT l.agent_id) AS agents,COALESCE(SUM(l.event='FIREWALL_DENY' OR (l.event='IDS_ALERT' AND l.result='blocked')),0) AS blocked
       FROM log_events l ${sql}`).get(...params);
     const sources = db.prepare(`SELECT l.src_ip AS ip,COUNT(*) AS events,COUNT(DISTINCT l.agent_id) AS agents,
       MAX(l.occurred_at) AS lastSeen FROM log_events l ${sql} GROUP BY l.src_ip ORDER BY events DESC,l.src_ip LIMIT 50`).all(...params);

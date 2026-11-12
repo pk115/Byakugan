@@ -1,4 +1,4 @@
-import {parseNpmLine,parseUfwLine,parseFail2banLine,classifyWebEvent} from "./security-log-parsers.mjs";
+import {parseSuricataLine,parseNpmLine,parseUfwLine,parseFail2banLine,classifyWebEvent} from "./security-log-parsers.mjs";
 // Linux log collectors: auth.log (sshd/sudo), nginx access log, journald service state.
 // Pure parsers + an offset-persisting reader; the agent loop in supapulse-agent.mjs ships the result.
 import { open, stat, readFile, writeFile, mkdir } from "node:fs/promises";
@@ -116,7 +116,7 @@ export async function collectLogs(cfg) {
   const stateFile = join(cfg.stateDir, "log-state.json");
   const state = await loadState(stateFile), next = { ...state }, events = [];
   const now = new Date();
-  for (const [key, path, parse] of [["auth", cfg.authLog, (l) => parseAuthLine(l, now)], ["nginx", cfg.nginxLog, (l) => classifyWebEvent(parseNginxLine(l, cfg.hostname))], ["npm",cfg.npmLog,l=>parseNpmLine(l,cfg.hostname)], ["ufw",cfg.ufwLog,l=>parseUfwLine(l,cfg.hostname,now)], ["fail2ban",cfg.fail2banLog,l=>parseFail2banLine(l,cfg.hostname)]]) {
+  for (const [key, path, parse] of [["auth", cfg.authLog, (l) => parseAuthLine(l, now)], ["nginx", cfg.nginxLog, (l) => classifyWebEvent(parseNginxLine(l, cfg.hostname))], ["suricata",cfg.suricataLog,l=>parseSuricataLine(l,cfg.hostname)], ["npm",cfg.npmLog,l=>parseNpmLine(l,cfg.hostname)], ["ufw",cfg.ufwLog,l=>parseUfwLine(l,cfg.hostname,now)], ["fail2ban",cfg.fail2banLog,l=>parseFail2banLine(l,cfg.hostname)]]) {
     if (!path) continue;
     const { lines, state: s } = await readNewLines(path, state[key], { backfill: cfg.backfill });
     next[key] = s;

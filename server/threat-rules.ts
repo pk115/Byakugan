@@ -17,6 +17,7 @@ CREATE INDEX IF NOT EXISTS idx_log_agent_ip_time ON log_events(agent_id,src_ip,o
 export function evaluateThreatRules(agentId:number,now=new Date()) {
   const policy=threatPolicy(),since=new Date(now.getTime()-policy.windowMinutes*60000).toISOString(),stamp=now.toISOString();
   const definitions=[
+    {rule:"IDS_SIGNATURE",prefix:"threat_ids_",threshold:1,actor:"CAST(COALESCE(json_extract(details_json,'$.signature_id'),'unknown') AS TEXT)",count:"COUNT(*)",where:"event='IDS_ALERT'"},
     {rule:"AUTH_FAILURES",prefix:"threat_auth_",threshold:policy.authThreshold,actor:"COALESCE(actor,'')",count:"COUNT(*)",where:"event IN ('LOGIN_FAILED','SSH_LOGIN_FAILED','SUDO_AUTH_FAILED','ROOT_LOGIN_DENIED','VPN_AUTH_FAILED','DB_AUTH_FAILED')"},
     {rule:"PORT_SCAN",prefix:"threat_ports_",threshold:policy.portThreshold,actor:"''",count:"COUNT(DISTINCT json_extract(details_json,'$.dst_port'))",where:"event='FIREWALL_DENY' AND src_ip IS NOT NULL AND src_ip!='' AND json_extract(details_json,'$.dst_port') IS NOT NULL AND json_extract(details_json,'$.dst_port')!=''"},
     {rule:"WEB_PROBES",prefix:"threat_web_",threshold:policy.webThreshold,actor:"''",count:"COUNT(*)",where:"event='HTTP_PROBE'"}
